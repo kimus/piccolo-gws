@@ -38,6 +38,10 @@ fn ensure_google_auth(config_dir: &Path, assume_yes: bool) -> Result<()> {
         .with_context(|| format!("creating auth directory {}", auth_dir.display()))?;
     println!("\nAuthentication backend: gws CLI (delegated)");
     println!("Store OAuth/backend state under: {}", auth_dir.display());
+    if !has_oauth_client(&auth_dir) {
+        println!("OAuth client: not configured");
+        println_oauth_client_guidance(&auth_dir);
+    }
     if which::which("gws").is_err() {
         println!("gws executable not found on PATH; the packaged runtime wrapper should provide it in Piccolo images.");
         return Ok(());
@@ -49,8 +53,14 @@ fn ensure_google_auth(config_dir: &Path, assume_yes: bool) -> Result<()> {
             if assume_yes {
                 return Ok(());
             }
-            println!("\nGoogle Workspace auth is already configured for this Piccolo workspace.");
-            println!("Use delegated setup to change Google Cloud/OAuth configuration, or login to switch/refresh credentials.");
+            println!("\nGoogle Workspace auth token/state is present for this Piccolo workspace.");
+            if !has_oauth_client(&auth_dir) {
+                println!(
+                    "OAuth client configuration is still missing, so login/refresh cannot run yet."
+                );
+            } else {
+                println!("Use delegated setup to change Google Cloud/OAuth configuration, or login to switch/refresh credentials.");
+            }
             if !prompt_gws_auth(
                 &auth_dir,
                 "Reconfigure Google auth? [s]etup / [l]ogin / [n]one: ",
@@ -61,7 +71,7 @@ fn ensure_google_auth(config_dir: &Path, assume_yes: bool) -> Result<()> {
         Ok(false) => {
             println!("gws auth status: login required");
             println!("\nGoogle Workspace is not authenticated for this Piccolo workspace.");
-            println!("Setup can delegate to the packaged gws CLI. Use 'setup' for first-time Google Cloud project/API/OAuth configuration, or 'login' if credentials are already configured.");
+            println!("Setup can delegate to the packaged gws CLI. Use 'setup' for first-time Google Cloud project/API/OAuth configuration, or 'login' if an OAuth client is already configured.");
             if assume_yes {
                 println!("Skipping delegated gws auth in --yes mode. Run `piccolo integration setup gws` interactively to complete Google login.");
                 return Ok(());
@@ -73,7 +83,7 @@ fn ensure_google_auth(config_dir: &Path, assume_yes: bool) -> Result<()> {
         }
         Err(err) => {
             println!("Could not check gws auth status: {err}");
-            println!("\nSetup can delegate to the packaged gws CLI. Use 'setup' for first-time Google Cloud project/API/OAuth configuration, or 'login' if credentials are already configured.");
+            println!("\nSetup can delegate to the packaged gws CLI. Use 'setup' for first-time Google Cloud project/API/OAuth configuration, or 'login' if an OAuth client is already configured.");
             if assume_yes {
                 println!("Skipping delegated gws auth in --yes mode. Run `piccolo integration setup gws` interactively to complete Google login.");
                 return Ok(());
@@ -104,8 +114,10 @@ fn prompt_gws_auth(auth_dir: &Path, prompt: &str) -> Result<bool> {
                 if which::which("gcloud").is_err() {
                     println!("\n`gws auth setup` requires the Google Cloud SDK (`gcloud`).");
                     println!("Piccolo's default runtime image does not package it because it adds hundreds of MB to every workspace.");
-                    println!("Use Google Cloud Console or a host-side gcloud install to create/configure the OAuth client, then run login here.");
-                    if confirm("Run `gws auth login` instead? [y/N] ")? {
+                    println_oauth_client_guidance(auth_dir);
+                    if has_oauth_client(auth_dir)
+                        && confirm("Run `gws auth login` instead? [y/N] ")?
+                    {
                         run_gws_auth(auth_dir, "login")?;
                         return Ok(true);
                     }
@@ -115,6 +127,11 @@ fn prompt_gws_auth(auth_dir: &Path, prompt: &str) -> Result<bool> {
                 return Ok(true);
             }
             "l" | "login" => {
+                if !has_oauth_client(auth_dir) {
+                    println!("\nCannot run `gws auth login` yet: no OAuth client is configured.");
+                    println_oauth_client_guidance(auth_dir);
+                    return Ok(false);
+                }
                 run_gws_auth(auth_dir, "login")?;
                 return Ok(true);
             }
@@ -122,6 +139,22 @@ fn prompt_gws_auth(auth_dir: &Path, prompt: &str) -> Result<bool> {
             _ => println!("Please enter s, l, or n."),
         }
     }
+}
+
+fn has_oauth_client(auth_dir: &Path) -> bool {
+    auth_dir.join("client_secret.json").is_file()
+        || (std::env::var_os("GOOGLE_WORKSPACE_CLI_CLIENT_ID").is_some()
+            && std::env::var_os("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET").is_some())
+}
+
+fn println_oauth_client_guidance(auth_dir: &Path) {
+    println!("Configure an OAuth client before logging in:");
+    println!(
+        "  1. Create a Desktop OAuth client in Google Cloud Console and download client_secret.json"
+    );
+    println!("  2. Save it to: {}/client_secret.json", auth_dir.display());
+    println!("  3. Rerun `piccolo integration setup kimus/piccolo-gws` and choose login");
+    println!("Alternatively set GOOGLE_WORKSPACE_CLI_CLIENT_ID and GOOGLE_WORKSPACE_CLI_CLIENT_SECRET in the container environment.");
 }
 
 fn gws_auth_status(auth_dir: &Path) -> Result<bool> {
@@ -168,4 +201,24 @@ fn confirm(prompt: &str) -> Result<bool> {
         input.trim().to_ascii_lowercase().as_str(),
         "y" | "yes"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_oauth_client;
+    use std::fs;
+
+    #[test]
+    fn detects_client_secret_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "piccolo-gws-setup-test-{}-{}",
+            std::process::id(),
+            "client-secret"
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("client_secret.json"), "{}").unwrap();
+        assert!(has_oauth_client(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
