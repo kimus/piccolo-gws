@@ -35,7 +35,7 @@ nix build
 ./result/bin/piccolo-gws describe --json
 ```
 
-The flake installs the `piccolo-gws` binary and wraps it with declared runtime dependencies on `PATH`.
+The flake installs the `piccolo-gws` binary and wraps it with declared runtime dependencies on `PATH`. The default runtime includes the lightweight `gws` backend, not the full Google Cloud SDK.
 
 ## Commands
 
@@ -77,6 +77,8 @@ Workspace content is untrusted input. Email, documents, calendar descriptions, a
 Piccolo discovers this package by running `piccolo-gws describe --json` in the gateway image, then runs the described setup command inside a setup container with a TTY. Setup stores Google integration state under `/root/.piccolo/integrations/gws` and merge-patches `/root/.picoclaw/config.json` to register the MCP server. Host workspace state is expected at `<workspace>/integrations/gws` and mounted to `/root/.piccolo/integrations/gws` in setup/runtime containers.
 
 Piccolo can also run the described status command with `piccolo integration status gws`. The status command performs live read-only checks against Google auth, Gmail, Calendar, and Drive by default, returning actionable remediation when authentication, scopes, APIs, or backend packaging need attention.
+
+Authentication uses the delegated `gws` backend. `gws auth login` works in the Piccolo runtime image. `gws auth setup` requires `gcloud` to provision/configure a Google Cloud project and OAuth client; Piccolo intentionally does not package Google Cloud SDK by default because it adds hundreds of MB to every integration image. Use Google Cloud Console or a host-side `gcloud` install for one-time project/OAuth setup, then run Piccolo setup and choose `login`.
 
 Expected state paths:
 

@@ -101,6 +101,16 @@ fn prompt_gws_auth(auth_dir: &Path, prompt: &str) -> Result<bool> {
         io::stdin().read_line(&mut input)?;
         match input.trim().to_ascii_lowercase().as_str() {
             "s" | "setup" => {
+                if which::which("gcloud").is_err() {
+                    println!("\n`gws auth setup` requires the Google Cloud SDK (`gcloud`).");
+                    println!("Piccolo's default runtime image does not package it because it adds hundreds of MB to every workspace.");
+                    println!("Use Google Cloud Console or a host-side gcloud install to create/configure the OAuth client, then run login here.");
+                    if confirm("Run `gws auth login` instead? [y/N] ")? {
+                        run_gws_auth(auth_dir, "login")?;
+                        return Ok(true);
+                    }
+                    return Ok(false);
+                }
                 run_gws_auth(auth_dir, "setup")?;
                 return Ok(true);
             }

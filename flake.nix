@@ -10,11 +10,11 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        # `gws` handles Workspace API calls, but `gws auth setup` shells out to
-        # `gcloud` for Google Cloud/OAuth project setup, so package both in the
-        # runtime wrapper PATH. If nixpkgs ever lacks `gws`, keep the package
-        # evaluable with the SDK fallback.
-        runtimeDeps = [ (pkgs.gws or pkgs.google-cloud-sdk) pkgs.google-cloud-sdk ];
+        # Runtime installs the lightweight `gws` backend. `gws auth setup`
+        # requires the much larger Google Cloud SDK, so Piccolo guides users to
+        # preconfigure OAuth externally or use `gws auth login` here instead of
+        # pulling the SDK into every runtime image.
+        runtimeDeps = [ (pkgs.gws or pkgs.google-cloud-sdk) ];
       in {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "piccolo-gws";
