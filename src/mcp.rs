@@ -1,7 +1,7 @@
 use crate::backend::GwsBackend;
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 pub fn serve_stdio(config_dir: PathBuf, read_only: bool) -> Result<()> {
