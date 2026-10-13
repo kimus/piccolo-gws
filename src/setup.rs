@@ -180,17 +180,25 @@ impl std::fmt::Display for Action {
 }
 
 fn capture_snapshot(auth_dir: &Path) -> AuthSnapshot {
-    let credentials = detect_credential_source(
+    let state = crate::backend::backend_auth_state(&auth_dir.to_path_buf());
+    let detected = detect_credential_source(
         auth_dir.join("client_secret.json").is_file(),
         non_empty_env("GOOGLE_WORKSPACE_CLI_CLIENT_ID"),
         non_empty_env("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET"),
     );
+    // The backend also knows about credentials we cannot see from this process
+    // (e.g. a credentials file it discovered on its own), so trust it as a
+    // fallback before concluding credentials are missing.
+    let credentials = match detected {
+        CredentialSource::None if state.client_configured() => CredentialSource::File,
+        other => other,
+    };
     let gws_available = which::which("gws").is_ok();
     AuthSnapshot {
         auth_dir: auth_dir.to_path_buf(),
         gws_available,
         credentials,
-        account_authorized: gws_available && gws_auth_status(auth_dir),
+        account_authorized: gws_available && state.authenticated(),
     }
 }
 
@@ -414,17 +422,6 @@ fn confirm_default_no(prompt: &str) -> bool {
     Confirm::new(prompt)
         .with_default(false)
         .prompt()
-        .unwrap_or(false)
-}
-
-fn gws_auth_status(auth_dir: &Path) -> bool {
-    gws_command(auth_dir)
-        .arg("auth")
-        .arg("status")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map(|out| out.status.success())
         .unwrap_or(false)
 }
 

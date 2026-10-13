@@ -21,9 +21,16 @@
 - [x] 3.1 Confirm status probes route through the corrected tool mapping and no longer emit `unrecognized subcommand`
 - [x] 3.2 Adjust probe arguments so a failing check means auth/scope/API trouble, not grammar
 
-## 4. Verification
+## 4. Authentication state detection
 
-- [x] 4.1 Add unit tests asserting the exact argv (service/resource/method + `--params` JSON) produced for each of the six tools
-- [x] 4.2 Add a packaging-time grammar check using `gws schema <method>` for every mapped method
-- [x] 4.3 Run `nix develop -c cargo fmt --check`, `nix develop -c cargo clippy --all-targets -- -D warnings`, `nix develop -c cargo test`, `nix build .#`
-- [ ] 4.4 Verify live against a real authenticated workspace that Gmail, Calendar, and Drive reads return data
+- [x] 4.1 Parse `gws auth status` JSON (`auth_method`, `credential_source`, `client_config_exists`, `token_cache_exists`) instead of trusting its always-zero exit code
+- [x] 4.2 Route setup, status, and tool login checks through the same parsed state
+- [x] 4.3 Make login-required guidance reference the actual state directory rather than the hard-coded default
+- [x] 4.4 Add a CLI test proving an exit-zero/unauthenticated backend is reported as not configured
+
+## 5. Verification
+
+- [x] 5.1 Add unit tests asserting the exact argv (service/resource/method + `--params` JSON) produced for each of the six tools
+- [x] 5.2 Add a packaging-time grammar check using `gws schema <method>` for every mapped method
+- [x] 5.3 Run `nix develop -c cargo fmt --check`, `nix develop -c cargo clippy --all-targets -- -D warnings`, `nix develop -c cargo test`, `nix build .#`
+- [ ] 5.4 Verify live against a real authenticated workspace that Gmail, Calendar, and Drive reads return data

@@ -3,7 +3,6 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -130,16 +129,7 @@ pub fn build_status(config_dir: &Path, picoclaw_config: Option<&Path>) -> Status
 }
 
 fn auth_status(config_dir: &Path) -> bool {
-    Command::new(backend_command_name())
-        .arg("auth")
-        .arg("status")
-        .env("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", config_dir.join("auth"))
-        .env("GWS_CONFIG_DIR", config_dir.join("auth"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    crate::backend::backend_auth_state(&config_dir.join("auth")).authenticated()
 }
 
 fn probe_check(

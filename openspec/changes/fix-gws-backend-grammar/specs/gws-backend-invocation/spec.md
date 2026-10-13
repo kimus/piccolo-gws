@@ -48,6 +48,23 @@ The release packaging step SHALL verify that every mapped backend method exists 
 - **WHEN** all mapped methods resolve and a dry-run call validates
 - **THEN** packaging continues to produce the release bundle
 
+### Requirement: Derive authentication state from the backend payload
+
+The system SHALL determine Google authentication state from the JSON reported by `gws auth status` and SHALL NOT treat its process exit code as proof of authentication, because the backend exits 0 when no credentials exist.
+
+#### Scenario: Backend exits zero without credentials
+- **WHEN** `gws auth status` exits 0 and reports `auth_method` `none`
+- **THEN** the system reports Google auth as not configured
+- **AND** service checks are skipped rather than reported as successful
+
+#### Scenario: Backend reports usable credentials
+- **WHEN** `gws auth status` reports a non-`none` `auth_method`
+- **THEN** the system treats Google Workspace as authenticated and runs live service checks
+
+#### Scenario: Login-required guidance names the real state directory
+- **WHEN** a tool or probe reports login-required
+- **THEN** the remediation references the integration's actual state directory rather than a hard-coded default path
+
 ### Requirement: Status probes reflect real service reachability
 
 The system's connectivity status checks SHALL use the same corrected backend invocations as the tools, so a check failure indicates an authentication, scope, or API problem rather than a command-line parse error.

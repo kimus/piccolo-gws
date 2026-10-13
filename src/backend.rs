@@ -1,8 +1,7 @@
-use crate::DEFAULT_CONFIG_DIR;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use wait_timeout::ChildExt;
@@ -37,29 +36,19 @@ impl GwsBackend {
 
     fn call_tool_result(&self, name: &str, args: Value) -> std::result::Result<Value, ToolError> {
         if !self.is_authenticated() {
-            return Err(login_required());
+            return Err(login_required_for(&self.config_dir));
         }
         let argv = tool_invocation(name, &args)?;
-        self.run_gws(&argv).map_err(normalize_backend_error)
+        let config_dir = self.config_dir.clone();
+        self.run_gws(&argv)
+            .map_err(|err| normalize_backend_error(err, &config_dir))
     }
 
     pub fn is_authenticated(&self) -> bool {
         if which::which(backend_command_name()).is_err() {
             return false;
         }
-        Command::new(backend_command_name())
-            .arg("auth")
-            .arg("status")
-            .env(
-                "GOOGLE_WORKSPACE_CLI_CONFIG_DIR",
-                self.config_dir.join("auth"),
-            )
-            .env("GWS_CONFIG_DIR", self.config_dir.join("auth"))
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+        backend_auth_state(&self.config_dir.join("auth")).authenticated()
     }
 
     fn run_gws(&self, args: &[String]) -> Result<Value> {
@@ -174,6 +163,68 @@ pub fn mapped_methods() -> Vec<&'static str> {
     ]
 }
 
+/// Authentication state as reported by the delegated backend.
+///
+/// `gws auth status` exits 0 even when nothing is authenticated, so state MUST
+/// be read from its JSON payload rather than the process exit code.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BackendAuthState {
+    pub auth_method: String,
+    pub credential_source: String,
+    pub client_config_exists: bool,
+    pub token_cache_exists: bool,
+}
+
+impl BackendAuthState {
+    /// True only when the backend holds usable credentials for API calls.
+    pub fn authenticated(&self) -> bool {
+        !self.auth_method.is_empty() && self.auth_method != "none"
+    }
+
+    /// True when OAuth client credentials are discoverable by the backend.
+    pub fn client_configured(&self) -> bool {
+        self.client_config_exists
+            || !self.credential_source.is_empty() && self.credential_source != "none"
+    }
+}
+
+pub fn backend_auth_state(auth_dir: &PathBuf) -> BackendAuthState {
+    let output = Command::new(backend_command_name())
+        .arg("auth")
+        .arg("status")
+        .env("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", auth_dir)
+        .env("GWS_CONFIG_DIR", auth_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let Ok(output) = output else {
+        return BackendAuthState::default();
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) else {
+        return BackendAuthState::default();
+    };
+    BackendAuthState {
+        auth_method: value
+            .get("auth_method")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        credential_source: value
+            .get("credential_source")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        client_config_exists: value
+            .get("client_config_exists")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        token_cache_exists: value
+            .get("token_cache_exists")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }
+}
+
 fn user_id(args: &Value) -> String {
     let id = arg_string(args, "user");
     if id.is_empty() {
@@ -224,19 +275,22 @@ pub fn normalize_value(value: Value) -> Value {
     }
 }
 
-pub fn login_required() -> ToolError {
+pub fn login_required_for(config_dir: &Path) -> ToolError {
     ToolError {
         code: "login_required".into(),
-        message: format!("Google Workspace authentication is incomplete. Run `piccolo-gws setup --config-dir {DEFAULT_CONFIG_DIR}` and complete delegated Google login."),
+        message: format!(
+            "Google Workspace authentication is incomplete. Run `piccolo-gws setup --config-dir {}` and complete delegated Google login.",
+            config_dir.display()
+        ),
         login_required: true,
     }
 }
 
-fn normalize_backend_error(err: anyhow::Error) -> ToolError {
+fn normalize_backend_error(err: anyhow::Error, config_dir: &Path) -> ToolError {
     let message = err.to_string();
     let lower = message.to_ascii_lowercase();
     if lower.contains("auth") || lower.contains("login") || lower.contains("credential") {
-        login_required()
+        login_required_for(config_dir)
     } else if lower.contains("timeout") {
         ToolError {
             code: "backend_timeout".into(),
@@ -361,9 +415,12 @@ mod tests {
 
     #[test]
     fn auth_error_shape_is_stable() {
-        let err = login_required();
+        let dir = std::path::Path::new("/root/.piccolo/integrations/kimus/piccolo-gws");
+        let err = login_required_for(dir);
         assert_eq!(err.code, "login_required");
         assert!(err.login_required);
-        assert!(err.message.contains(crate::DEFAULT_CONFIG_DIR));
+        // The message must name the workspace's real state dir, not a stale default.
+        assert!(err.message.contains(dir.to_str().unwrap()));
+        assert!(!err.message.contains(crate::DEFAULT_CONFIG_DIR));
     }
 }
