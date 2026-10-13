@@ -15,8 +15,6 @@ Google Workspace setup is currently too raw for a productized integration: users
 
 ### New Capabilities
 
-- none (behavior extends the existing `google-workspace-integration` capability)
-
 ### Modified Capabilities
 
 - `google-workspace-integration`: Adds guided interactive setup requirements for OAuth credential creation/import, browser login, Google Cloud SDK support, and status-aware remediation.
@@ -28,3 +26,6 @@ Google Workspace setup is currently too raw for a productized integration: users
 - `flake.nix` and release packaging: Make `gcloud` available in the runtime bundle again for setup-time credential creation.
 - Tests: Cover menu decision helpers, credential import validation/storage, and non-interactive behavior where practical.
 - README/docs: Document guided setup, credential/login distinction, and expected browser OAuth behavior.
+
+This change supersedes the "bundles must not contain `gcloud`" decision in the still-open
+`publish-integration-release-artifacts` change; that change's artifacts were updated to match.

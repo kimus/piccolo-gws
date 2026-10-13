@@ -2,7 +2,7 @@
 
 `piccolo-gws` currently exposes the right runtime commands (`describe`, `setup`, `status`, `mcp`) but users install it through Piccolo's Devbox/Nix source-build path. That path can download Rust build dependencies and the `gws` runtime closure during Docker builds. The desired integration UX is release-based: Piccolo downloads a verified bundle and copies binaries into the runtime image.
 
-The release bundle must include every command needed by the descriptor, especially `piccolo-gws` and the delegated `gws` backend. It should not include Google Cloud SDK by default; `gws auth setup` remains an external provisioning path, while `gws auth login` is the normal in-runtime authentication path.
+The release bundle must include every command needed by the descriptor, especially `piccolo-gws` and the delegated `gws` backend. It now also includes Google Cloud SDK (`gcloud`): guided credential creation (`gws auth setup`) is a first-class setup path, so `gcloud` must exist inside the Piccolo runtime. This reverses the earlier size-driven decision; see `add-guided-google-workspace-setup`.
 
 ## Goals / Non-Goals
 
@@ -17,7 +17,7 @@ The release bundle must include every command needed by the descriptor, especial
 **Non-Goals:**
 
 - No host Piccolo CLI release from this repository.
-- No Google Cloud SDK in default integration bundles.
+- Google Cloud SDK ships in integration bundles so setup can create OAuth credentials.
 - No change to read-only MCP tool safety.
 - No direct replacement of `gws` with native Google API implementation in this change.
 
@@ -77,11 +77,11 @@ This repository uses bare tags such as `3.1.0`. Piccolo treats explicit package 
 
 ### Runtime auth behavior
 
-Release bundles include `gws` but not `gcloud`. If setup users choose delegated project provisioning (`gws auth setup`) and `gcloud` is absent, `piccolo-gws` explains the dependency and offers login instead. This keeps product install size reasonable.
+Release bundles include `gws` and `gcloud`. Bundling `gcloud` grows the artifact considerably, which is accepted in exchange for a working guided "Create credentials" flow. A setup-only runtime image is the follow-up mitigation if size becomes a problem.
 
 ## Risks / Trade-offs
 
 - **Cross-platform backend packaging complexity** → Keep the workflow explicit and fail hard when `gws` is missing for a target platform.
-- **Large bundles if dependencies are not static/minimized** → Measure artifact sizes and avoid bundling Google Cloud SDK.
+- **Large bundles because Google Cloud SDK is included** → Record bundle sizes per release and revisit a setup-only image or on-demand provisioning layer.
 - **Digest manifest drift** → Generate the release manifest after archives are created and checksummed in CI.
 - **Release install incompatibility** → CI should smoke-test each bundle by running `bin/piccolo-gws describe --json` and `bin/piccolo-gws status --json` with an empty temp config.

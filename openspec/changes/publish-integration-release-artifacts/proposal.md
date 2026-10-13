@@ -8,6 +8,7 @@ Piccolo should install `piccolo-gws` from release artifacts instead of building 
 - Publish GitHub Releases using repository-owned tags such as `3.1.0` with no required `v` prefix for this project.
 - Build Linux amd64 and arm64 release artifacts containing all runtime commands required by the descriptor.
 - Include the delegated `gws` backend binary in each bundle so Piccolo does not need to build/fetch it through Nix during integration install.
+- Include Google Cloud SDK (`gcloud`) in bundles so guided setup can create OAuth credentials in-runtime (reverses the earlier size-driven exclusion; see `add-guided-google-workspace-setup`).
 - Publish a `piccolo.integration.release.v1` release manifest with artifact names, platforms, and SHA-256 digests.
 - Keep the Nix flake/source-build path available for development, but make release artifacts the product install path.
 

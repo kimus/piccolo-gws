@@ -9,7 +9,7 @@
 
 - [x] 2.1 Build `piccolo-gws` release binaries for Linux amd64 and Linux arm64
 - [x] 2.2 Package the delegated `gws` backend binary for Linux amd64 and Linux arm64
-- [x] 2.3 Ensure bundles do not include Google Cloud SDK or `gcloud`
+- [ ] 2.3 Include Google Cloud SDK (`gcloud`) in bundles so `gws auth setup` can create credentials in-runtime
 - [x] 2.4 Make the packaging workflow fail if any descriptor-declared runtime command is missing
 
 ## 3. GitHub Actions Release Workflow
@@ -24,6 +24,6 @@
 ## 4. Documentation and Validation
 
 - [x] 4.1 Update README to document release bundles as the product install path for Piccolo
-- [x] 4.2 Document that `gws auth login` is supported in-runtime while `gws auth setup` requires external `gcloud`
+- [ ] 4.2 Document that release bundles ship `gcloud`, so `gws auth setup` and `gws auth login` both run in the Piccolo runtime
 - [x] 4.3 Keep Nix flake build/test documentation for source-build development
 - [x] 4.4 Run `nix develop -c cargo fmt --check`, `nix develop -c cargo test`, `nix build .#`, and `openspec validate publish-integration-release-artifacts --strict`
