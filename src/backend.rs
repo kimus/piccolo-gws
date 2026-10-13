@@ -76,12 +76,25 @@ impl GwsBackend {
     }
 
     pub fn is_authenticated(&self) -> bool {
-        self.config_dir.join("auth").exists() && which::which("gws").is_ok()
+        if which::which("gws").is_err() {
+            return false;
+        }
+        Command::new("gws")
+            .arg("auth")
+            .arg("status")
+            .env("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", self.config_dir.join("auth"))
+            .env("GWS_CONFIG_DIR", self.config_dir.join("auth"))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
     }
 
     fn run_gws(&self, args: &[String]) -> Result<Value> {
         let mut child = Command::new("gws")
             .args(args)
+            .env("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", self.config_dir.join("auth"))
             .env("GWS_CONFIG_DIR", self.config_dir.join("auth"))
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
