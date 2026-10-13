@@ -13,6 +13,18 @@ fn describe_json_cli_outputs_descriptor() {
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["schema"], "piccolo.integration.v1");
     assert_eq!(value["name"], "gws");
+    assert_eq!(
+        value["setup"]["defaultConfigDir"],
+        piccolo_gws::DEFAULT_CONFIG_DIR
+    );
+    assert_eq!(
+        value["commands"]["setup"]["args"][2],
+        piccolo_gws::DEFAULT_CONFIG_DIR
+    );
+    assert_eq!(
+        value["commands"]["mcp"]["args"][2],
+        piccolo_gws::DEFAULT_CONFIG_DIR
+    );
 }
 
 #[test]
@@ -39,6 +51,10 @@ fn setup_patches_config_with_yes() {
     assert_eq!(
         patched["tools"]["mcp"]["servers"]["google_workspace"]["command"],
         "piccolo-gws"
+    );
+    assert_eq!(
+        patched["tools"]["mcp"]["servers"]["google_workspace"]["args"][2],
+        state.to_str().unwrap()
     );
 }
 

@@ -1,3 +1,4 @@
+use crate::DEFAULT_CONFIG_DIR;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -82,7 +83,10 @@ impl GwsBackend {
         Command::new("gws")
             .arg("auth")
             .arg("status")
-            .env("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", self.config_dir.join("auth"))
+            .env(
+                "GOOGLE_WORKSPACE_CLI_CONFIG_DIR",
+                self.config_dir.join("auth"),
+            )
             .env("GWS_CONFIG_DIR", self.config_dir.join("auth"))
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -94,7 +98,10 @@ impl GwsBackend {
     fn run_gws(&self, args: &[String]) -> Result<Value> {
         let mut child = Command::new("gws")
             .args(args)
-            .env("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", self.config_dir.join("auth"))
+            .env(
+                "GOOGLE_WORKSPACE_CLI_CONFIG_DIR",
+                self.config_dir.join("auth"),
+            )
             .env("GWS_CONFIG_DIR", self.config_dir.join("auth"))
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -156,7 +163,7 @@ pub fn normalize_value(value: Value) -> Value {
 pub fn login_required() -> ToolError {
     ToolError {
         code: "login_required".into(),
-        message: "Google Workspace authentication is incomplete. Run `piccolo-gws setup --config-dir /root/.picoclaw/integrations/google` and complete delegated Google login.".into(),
+        message: format!("Google Workspace authentication is incomplete. Run `piccolo-gws setup --config-dir {DEFAULT_CONFIG_DIR}` and complete delegated Google login."),
         login_required: true,
     }
 }
@@ -203,5 +210,6 @@ mod tests {
         let err = login_required();
         assert_eq!(err.code, "login_required");
         assert!(err.login_required);
+        assert!(err.message.contains(crate::DEFAULT_CONFIG_DIR));
     }
 }

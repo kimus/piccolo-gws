@@ -24,10 +24,10 @@ enum Commands {
     /// Run interactive setup for the integration.
     Setup {
         /// Integration state directory.
-        #[arg(long, default_value = "/root/.picoclaw/integrations/google")]
+        #[arg(long, default_value = piccolo_gws::DEFAULT_CONFIG_DIR)]
         config_dir: PathBuf,
         /// PicoClaw config path to patch.
-        #[arg(long, default_value = "/root/.picoclaw/config.json")]
+        #[arg(long, default_value = piccolo_gws::DEFAULT_PICOCLAW_CONFIG)]
         picoclaw_config: PathBuf,
         /// Apply without prompting. Intended for tests/automation only.
         #[arg(long)]
@@ -36,7 +36,7 @@ enum Commands {
     /// Run the stdio MCP server.
     Mcp {
         /// Integration state directory.
-        #[arg(long, default_value = "/root/.picoclaw/integrations/google")]
+        #[arg(long, default_value = piccolo_gws::DEFAULT_CONFIG_DIR)]
         config_dir: PathBuf,
         /// Restrict tools to read-only operations.
         #[arg(long, default_value_t = true)]

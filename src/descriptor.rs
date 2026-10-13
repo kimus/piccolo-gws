@@ -1,3 +1,4 @@
+use crate::DEFAULT_CONFIG_DIR;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -71,17 +72,17 @@ pub fn descriptor() -> Descriptor {
         commands: Commands {
             setup: CommandSpec {
                 command: "piccolo-gws",
-                args: vec!["setup", "--config-dir", "/root/.picoclaw/integrations/google"],
+                args: vec!["setup", "--config-dir", DEFAULT_CONFIG_DIR],
             },
             mcp: CommandSpec {
                 command: "piccolo-gws",
-                args: vec!["mcp", "--config-dir", "/root/.picoclaw/integrations/google", "--read-only"],
+                args: vec!["mcp", "--config-dir", DEFAULT_CONFIG_DIR, "--read-only"],
             },
         },
         setup: SetupMetadata {
             requires_tty: true,
             config_dir_arg: "--config-dir",
-            default_config_dir: "/root/.picoclaw/integrations/google",
+            default_config_dir: DEFAULT_CONFIG_DIR,
             ports: vec![PortSpec {
                 name: "oauth-loopback",
                 port: 8080,
@@ -116,7 +117,19 @@ mod tests {
         assert_eq!(value["name"], "gws");
         assert_eq!(value["displayName"], "Google Workspace");
         assert_eq!(value["setup"]["requiresTty"], true);
+        assert_eq!(
+            value["setup"]["defaultConfigDir"],
+            crate::DEFAULT_CONFIG_DIR
+        );
         assert_eq!(value["commands"]["setup"]["command"], "piccolo-gws");
+        assert_eq!(
+            value["commands"]["setup"]["args"][2],
+            crate::DEFAULT_CONFIG_DIR
+        );
+        assert_eq!(
+            value["commands"]["mcp"]["args"][2],
+            crate::DEFAULT_CONFIG_DIR
+        );
         let tools = value["mcp"]["tools"].as_array().unwrap();
         assert!(tools.contains(&Value::String("gmail_search".into())));
     }

@@ -125,6 +125,10 @@ mod tests {
             current["tools"]["mcp"]["servers"]["google_workspace"]["command"],
             "piccolo-gws"
         );
+        assert_eq!(
+            current["tools"]["mcp"]["servers"]["google_workspace"]["args"][2],
+            "/state"
+        );
     }
 
     #[test]
