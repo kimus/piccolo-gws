@@ -75,7 +75,7 @@ pub fn build_status(config_dir: &Path, picoclaw_config: Option<&Path>) -> Status
             "auth",
             "Google auth",
             "Google Workspace authentication is incomplete or invalid",
-            "Run `piccolo integration setup gws` and complete delegated Google login.",
+            "Run `piccolo integration setup kimus/piccolo-gws` and complete delegated Google login.",
         )
     });
 
@@ -181,7 +181,7 @@ fn state_dir_check(config_dir: &Path) -> StatusCheck {
             label: "State directory",
             status: CheckStatus::Warn,
             message: format!("{} does not exist yet", config_dir.display()),
-            remediation: Some("Run `piccolo integration setup gws`.".to_string()),
+            remediation: Some("Run `piccolo integration setup kimus/piccolo-gws`.".to_string()),
         }
     }
 }
@@ -219,7 +219,7 @@ fn picoclaw_config_check(path: &Path, config_dir: &Path) -> StatusCheck {
                     "picoclaw-config",
                     "PicoClaw config",
                     "google_workspace MCP server is missing or does not match expected args",
-                    "Run `piccolo integration setup gws` to patch PicoClaw config.",
+                    "Run `piccolo integration setup kimus/piccolo-gws` to patch PicoClaw config.",
                 )
             }
         }
@@ -227,7 +227,7 @@ fn picoclaw_config_check(path: &Path, config_dir: &Path) -> StatusCheck {
             "picoclaw-config",
             "PicoClaw config",
             &err.to_string(),
-            "Run `piccolo integration setup gws` after fixing config.json.",
+            "Run `piccolo integration setup kimus/piccolo-gws` after fixing config.json.",
         ),
     }
 }
@@ -277,7 +277,7 @@ fn skip_auth(id: &'static str, label: &'static str) -> StatusCheck {
         status: CheckStatus::Skip,
         message: "skipped because Google auth is not valid".to_string(),
         remediation: Some(
-            "Run `piccolo integration setup gws` and complete delegated Google login.".to_string(),
+            "Run `piccolo integration setup kimus/piccolo-gws` and complete delegated Google login.".to_string(),
         ),
     }
 }
@@ -285,13 +285,14 @@ fn skip_auth(id: &'static str, label: &'static str) -> StatusCheck {
 fn remediation_for(message: &str) -> String {
     let lower = message.to_ascii_lowercase();
     if lower.contains("scope") || lower.contains("permission") || lower.contains("forbidden") {
-        "Run `piccolo integration setup gws` and grant the required read-only Google Workspace scopes.".to_string()
+        "Run `piccolo integration setup kimus/piccolo-gws` and grant the required read-only Google Workspace scopes.".to_string()
     } else if lower.contains("timeout") {
         "Check network connectivity and try again.".to_string()
     } else if lower.contains("api") || lower.contains("disabled") {
         "Enable the relevant Google Workspace API in the Google Cloud project, then rerun setup if needed.".to_string()
     } else {
-        "Run `piccolo integration setup gws` to verify Google auth and configuration.".to_string()
+        "Run `piccolo integration setup kimus/piccolo-gws` to verify Google auth and configuration."
+            .to_string()
     }
 }
 

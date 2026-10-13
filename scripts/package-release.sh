@@ -53,6 +53,15 @@ while IFS= read -r store_path; do
   cp -a "$store_path" "$work/bundle$store_path"
 done < <(nix-store -qR "$piccolo_result" "$gws_result" | sort -u)
 
+# Grammar guard: every backend method this build maps must exist in the pinned
+# gws version, otherwise tools fail at runtime with "unrecognized subcommand".
+while IFS= read -r method; do
+  if ! "$work/bundle/bin/gws" schema "$method" >/dev/null 2>&1; then
+    echo "release bundle gws no longer provides method: $method" >&2
+    exit 1
+  fi
+done < <("$work/bundle/bin/piccolo-gws" backend-methods)
+
 if [[ -e "$work/bundle/bin/gcloud" ]] || find "$work/bundle" -type f -name gcloud | grep -q .; then
   echo "release bundle must not contain gcloud" >&2
   exit 1

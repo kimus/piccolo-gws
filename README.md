@@ -128,7 +128,7 @@ Workspace content is untrusted input. Email, documents, calendar descriptions, a
 
 Piccolo discovers this package by running `piccolo-gws describe --json` in the gateway image, then runs the described setup command inside a setup container with a TTY. Setup stores Google integration state under `/root/.piccolo/integrations/gws` and merge-patches `/root/.picoclaw/config.json` to register the MCP server. Host workspace state is expected at `<workspace>/integrations/gws` and mounted to `/root/.piccolo/integrations/gws` in setup/runtime containers.
 
-Piccolo can also run the described status command with `piccolo integration status gws`. The status command performs live read-only checks against Google auth, Gmail, Calendar, and Drive by default, returning actionable remediation when authentication, scopes, APIs, or backend packaging need attention.
+Piccolo can also run the described status command with `piccolo integration status kimus/piccolo-gws`. The status command performs live read-only checks against Google auth, Gmail, Calendar, and Drive by default, returning actionable remediation when authentication, scopes, APIs, or backend packaging need attention.
 
 Authentication uses the delegated `gws` backend. `gws auth login` performs browser OAuth2 inside the Piccolo runtime image. OAuth client credentials are created once in Google Cloud Console and imported through setup (`Import credentials`) or supplied via `GOOGLE_WORKSPACE_CLI_CLIENT_ID` / `GOOGLE_WORKSPACE_CLI_CLIENT_SECRET`; release bundles deliberately exclude the multi-gigabyte Google Cloud SDK.
 

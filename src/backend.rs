@@ -39,40 +39,7 @@ impl GwsBackend {
         if !self.is_authenticated() {
             return Err(login_required());
         }
-        let argv: Vec<String> = match name {
-            "gmail_search" => vec![
-                "gmail".into(),
-                "search".into(),
-                arg_string(&args, "query"),
-                "--limit".into(),
-                arg_limit(&args),
-            ],
-            "gmail_read" => vec!["gmail".into(), "read".into(), arg_string(&args, "id")],
-            "calendar_list" => vec![
-                "calendar".into(),
-                "list".into(),
-                "--time-min".into(),
-                arg_string(&args, "time_min"),
-                "--time-max".into(),
-                arg_string(&args, "time_max"),
-            ],
-            "calendar_read" => vec!["calendar".into(), "read".into(), arg_string(&args, "id")],
-            "drive_search" => vec![
-                "drive".into(),
-                "search".into(),
-                arg_string(&args, "query"),
-                "--limit".into(),
-                arg_limit(&args),
-            ],
-            "drive_read" => vec!["drive".into(), "read".into(), arg_string(&args, "id")],
-            _ => {
-                return Err(ToolError {
-                    code: "unknown_tool".into(),
-                    message: format!("unknown tool: {name}"),
-                    login_required: false,
-                })
-            }
-        };
+        let argv = tool_invocation(name, &args)?;
         self.run_gws(&argv).map_err(normalize_backend_error)
     }
 
@@ -130,12 +97,105 @@ fn arg_string(args: &Value, key: &str) -> String {
         .to_string()
 }
 
-fn arg_limit(args: &Value) -> String {
+fn arg_limit(args: &Value) -> u64 {
     args.get("limit")
         .and_then(Value::as_u64)
         .unwrap_or(10)
         .min(50)
-        .to_string()
+}
+
+/// Map an MCP tool name + args onto a verified `gws` argv invocation of the form
+/// `gws <service> <resource> [sub-resource] <method> --params <JSON>`.
+///
+/// Grammar verified against the pinned gws version (see the unit tests).
+/// Optional parameters that arrive empty are omitted rather than sent as "",
+/// which the Google APIs reject.
+pub fn tool_invocation(name: &str, args: &Value) -> std::result::Result<Vec<String>, ToolError> {
+    let mut params = serde_json::Map::new();
+    let path: Vec<&str> = match name {
+        "gmail_search" => {
+            params.insert("userId".into(), json!(user_id(args)));
+            params.insert("q".into(), json!(arg_string(args, "query")));
+            params.insert("maxResults".into(), json!(arg_limit(args)));
+            vec!["gmail", "users", "messages", "list"]
+        }
+        "gmail_read" => {
+            params.insert("userId".into(), json!(user_id(args)));
+            params.insert("id".into(), json!(arg_string(args, "id")));
+            params.insert("format".into(), json!("full"));
+            vec!["gmail", "users", "messages", "get"]
+        }
+        "calendar_list" => {
+            params.insert("calendarId".into(), json!(calendar_id(args)));
+            insert_if_non_empty(&mut params, "timeMin", arg_string(args, "time_min"));
+            insert_if_non_empty(&mut params, "timeMax", arg_string(args, "time_max"));
+            params.insert("maxResults".into(), json!(arg_limit(args)));
+            vec!["calendar", "events", "list"]
+        }
+        "calendar_read" => {
+            params.insert("calendarId".into(), json!(calendar_id(args)));
+            // The Calendar API names this parameter eventId, not id.
+            params.insert("eventId".into(), json!(arg_string(args, "id")));
+            vec!["calendar", "events", "get"]
+        }
+        "drive_search" => {
+            insert_if_non_empty(&mut params, "q", arg_string(args, "query"));
+            params.insert("pageSize".into(), json!(arg_limit(args)));
+            vec!["drive", "files", "list"]
+        }
+        "drive_read" => {
+            params.insert("fileId".into(), json!(arg_string(args, "id")));
+            vec!["drive", "files", "get"]
+        }
+        _ => {
+            return Err(ToolError {
+                code: "unknown_tool".into(),
+                message: format!("unknown tool: {name}"),
+                login_required: false,
+            })
+        }
+    };
+    let mut argv: Vec<String> = path.iter().map(|s| (*s).to_string()).collect();
+    argv.push("--params".into());
+    argv.push(Value::Object(params).to_string());
+    Ok(argv)
+}
+
+/// Backend methods referenced by the tool mapping, used by release packaging to
+/// fail early when a pinned gws version no longer provides them.
+pub fn mapped_methods() -> Vec<&'static str> {
+    vec![
+        "gmail.users.messages.list",
+        "gmail.users.messages.get",
+        "calendar.events.list",
+        "calendar.events.get",
+        "drive.files.list",
+        "drive.files.get",
+    ]
+}
+
+fn user_id(args: &Value) -> String {
+    let id = arg_string(args, "user");
+    if id.is_empty() {
+        "me".to_string()
+    } else {
+        id
+    }
+}
+
+fn calendar_id(args: &Value) -> String {
+    let id = arg_string(args, "calendar_id");
+    if id.is_empty() {
+        "primary".to_string()
+    } else {
+        id
+    }
+}
+
+fn insert_if_non_empty(map: &mut serde_json::Map<String, Value>, key: &str, value: String) {
+    if !value.trim().is_empty() {
+        map.insert(key.to_string(), json!(value));
+    }
 }
 
 pub fn backend_command_name() -> std::ffi::OsString {
@@ -195,6 +255,96 @@ fn normalize_backend_error(err: anyhow::Error) -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn params_for(name: &str, args: Value) -> (Vec<String>, Value) {
+        let argv = tool_invocation(name, &args).unwrap();
+        let json_index = argv.iter().position(|a| a == "--params").unwrap();
+        let params: Value = serde_json::from_str(&argv[json_index + 1]).unwrap();
+        (argv[..json_index].to_vec(), params)
+    }
+
+    #[test]
+    fn gmail_search_uses_real_resource_method() {
+        let (path, params) = params_for("gmail_search", json!({"query":"invoice","limit":5}));
+        assert_eq!(path, vec!["gmail", "users", "messages", "list"]);
+        assert_eq!(params["userId"], "me");
+        assert_eq!(params["q"], "invoice");
+        assert_eq!(params["maxResults"], 5);
+    }
+
+    #[test]
+    fn gmail_read_defaults_to_authenticated_user() {
+        let (path, params) = params_for("gmail_read", json!({"id":"msg1"}));
+        assert_eq!(path, vec!["gmail", "users", "messages", "get"]);
+        assert_eq!(params["userId"], "me");
+        assert_eq!(params["id"], "msg1");
+        assert_eq!(params["format"], "full");
+    }
+
+    #[test]
+    fn gmail_user_override_is_honored() {
+        let (_, params) = params_for("gmail_search", json!({"query":"","user":"a@b.com"}));
+        assert_eq!(params["userId"], "a@b.com");
+    }
+
+    #[test]
+    fn calendar_list_defaults_to_primary_and_drops_empty_range() {
+        let (path, params) = params_for("calendar_list", json!({"time_min":"", "time_max":""}));
+        assert_eq!(path, vec!["calendar", "events", "list"]);
+        assert_eq!(params["calendarId"], "primary");
+        assert!(params.get("timeMin").is_none());
+        assert!(params.get("timeMax").is_none());
+    }
+
+    #[test]
+    fn calendar_list_passes_through_time_range() {
+        let (_, params) = params_for(
+            "calendar_list",
+            json!({"time_min":"2026-01-01T00:00:00Z","time_max":"2026-02-01T00:00:00Z"}),
+        );
+        assert_eq!(params["timeMin"], "2026-01-01T00:00:00Z");
+        assert_eq!(params["timeMax"], "2026-02-01T00:00:00Z");
+    }
+
+    #[test]
+    fn calendar_read_uses_event_id_parameter_name() {
+        let (path, params) = params_for("calendar_read", json!({"id":"evt1"}));
+        assert_eq!(path, vec!["calendar", "events", "get"]);
+        assert_eq!(params["calendarId"], "primary");
+        assert_eq!(params["eventId"], "evt1");
+        assert!(params.get("id").is_none());
+    }
+
+    #[test]
+    fn drive_search_omits_empty_query() {
+        let (path, params) = params_for("drive_search", json!({"query":"","limit":3}));
+        assert_eq!(path, vec!["drive", "files", "list"]);
+        assert!(params.get("q").is_none());
+        assert_eq!(params["pageSize"], 3);
+    }
+
+    #[test]
+    fn drive_read_uses_file_id_parameter_name() {
+        let (path, params) = params_for("drive_read", json!({"id":"file1"}));
+        assert_eq!(path, vec!["drive", "files", "get"]);
+        assert_eq!(params["fileId"], "file1");
+    }
+
+    #[test]
+    fn unknown_tool_is_rejected() {
+        assert!(tool_invocation("gmail_send", &json!({})).is_err());
+    }
+
+    #[test]
+    fn mapped_methods_cover_every_tool() {
+        assert_eq!(mapped_methods().len(), 6);
+    }
+
+    #[test]
+    fn limit_is_capped_for_backend() {
+        let (_, params) = params_for("gmail_search", json!({"query":"x","limit":500}));
+        assert_eq!(params["maxResults"], 50);
+    }
 
     #[test]
     fn parses_json_array_as_items() {

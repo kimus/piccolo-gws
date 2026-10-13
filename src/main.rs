@@ -45,6 +45,9 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// List the delegated backend API methods this build depends on.
+    /// Used by release packaging to detect gws grammar drift.
+    BackendMethods,
     /// Run the stdio MCP server.
     Mcp {
         /// Integration state directory.
@@ -67,6 +70,11 @@ fn main() -> Result<()> {
                 "{}",
                 serde_json::to_string_pretty(&piccolo_gws::descriptor::descriptor())?
             );
+        }
+        Commands::BackendMethods => {
+            for method in piccolo_gws::backend::mapped_methods() {
+                println!("{method}");
+            }
         }
         Commands::Setup {
             config_dir,
