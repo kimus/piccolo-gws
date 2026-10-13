@@ -18,22 +18,40 @@ esac
 platform="linux/${arch}"
 asset="piccolo-gws_${version}_linux_${arch}.tar.gz"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+cleanup() {
+  chmod -R u+w "$work" 2>/dev/null || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
 
 mkdir -p "$work/bundle/bin" "$work/bundle/share/piccolo/integration" "$out_dir"
 
-cargo build --release --locked
-install -m 0755 target/release/piccolo-gws "$work/bundle/bin/piccolo-gws"
+# Build both the integration wrapper and delegated backend with Nix, then
+# include their runtime closure. The PicoClaw image is Alpine/musl; standalone
+# glibc-linked Linux binaries fail there with "No such file or directory"
+# because their ELF interpreter is absent.
+piccolo_result="$work/piccolo-gws-result"
+gws_result="$work/gws-result"
+nix build --out-link "$piccolo_result" .#
 
 # The delegated backend is intentionally packaged without Google Cloud SDK.
 # If nixpkgs does not provide `gws` for this platform, release packaging must fail.
-gws_result="$work/gws-result"
 nix build --out-link "$gws_result" nixpkgs#gws
+if [[ ! -x "$piccolo_result/bin/piccolo-gws" ]]; then
+  echo "flake package did not provide an executable bin/piccolo-gws" >&2
+  exit 1
+fi
 if [[ ! -x "$gws_result/bin/gws" ]]; then
   echo "nixpkgs#gws did not provide an executable bin/gws" >&2
   exit 1
 fi
+install -m 0755 "$piccolo_result/bin/piccolo-gws" "$work/bundle/bin/piccolo-gws"
 install -m 0755 "$gws_result/bin/gws" "$work/bundle/bin/gws"
+
+while IFS= read -r store_path; do
+  mkdir -p "$work/bundle$(dirname "$store_path")"
+  cp -a "$store_path" "$work/bundle$store_path"
+done < <(nix-store -qR "$piccolo_result" "$gws_result" | sort -u)
 
 if [[ -e "$work/bundle/bin/gcloud" ]] || find "$work/bundle" -type f -name gcloud | grep -q .; then
   echo "release bundle must not contain gcloud" >&2
