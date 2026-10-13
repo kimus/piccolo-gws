@@ -77,10 +77,10 @@ impl GwsBackend {
     }
 
     pub fn is_authenticated(&self) -> bool {
-        if which::which("gws").is_err() {
+        if which::which(backend_command_name()).is_err() {
             return false;
         }
-        Command::new("gws")
+        Command::new(backend_command_name())
             .arg("auth")
             .arg("status")
             .env(
@@ -96,7 +96,7 @@ impl GwsBackend {
     }
 
     fn run_gws(&self, args: &[String]) -> Result<Value> {
-        let mut child = Command::new("gws")
+        let mut child = Command::new(backend_command_name())
             .args(args)
             .env(
                 "GOOGLE_WORKSPACE_CLI_CONFIG_DIR",
@@ -136,6 +136,10 @@ fn arg_limit(args: &Value) -> String {
         .unwrap_or(10)
         .min(50)
         .to_string()
+}
+
+pub fn backend_command_name() -> std::ffi::OsString {
+    std::env::var_os("PICCOLO_GWS_BACKEND_BIN").unwrap_or_else(|| std::ffi::OsString::from("gws"))
 }
 
 pub fn parse_output(stdout: &[u8]) -> Result<Value> {

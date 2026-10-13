@@ -33,6 +33,18 @@ enum Commands {
         #[arg(long)]
         yes: bool,
     },
+    /// Run live Google Workspace connectivity checks.
+    Status {
+        /// Integration state directory.
+        #[arg(long, default_value = piccolo_gws::DEFAULT_CONFIG_DIR)]
+        config_dir: PathBuf,
+        /// Optional PicoClaw config path to validate MCP registration.
+        #[arg(long)]
+        picoclaw_config: Option<PathBuf>,
+        /// Emit JSON status output.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the stdio MCP server.
     Mcp {
         /// Integration state directory.
@@ -62,6 +74,13 @@ fn main() -> Result<()> {
             yes,
         } => {
             piccolo_gws::setup::run_setup(&config_dir, &picoclaw_config, yes)?;
+        }
+        Commands::Status {
+            config_dir,
+            picoclaw_config,
+            json,
+        } => {
+            piccolo_gws::status::run_status(&config_dir, picoclaw_config.as_deref(), json)?;
         }
         Commands::Mcp {
             config_dir,

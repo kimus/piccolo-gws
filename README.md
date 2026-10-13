@@ -7,6 +7,7 @@ Google Workspace integration package for Piccolo/PicoClaw.
 - a Piccolo integration descriptor via `piccolo-gws describe --json`
 - an interactive setup command that prepares integration state and patches PicoClaw config
 - a read-only stdio MCP server exposing curated Gmail, Calendar, and Drive tools
+- a live connectivity status command for Google auth, Gmail, Calendar, and Drive
 
 ## Development environment
 
@@ -41,6 +42,7 @@ The flake installs the `piccolo-gws` binary and wraps it with declared runtime d
 - `piccolo-gws describe --json` prints the Piccolo integration descriptor.
 - `piccolo-gws setup --config-dir /root/.piccolo/integrations/gws` prepares state and registers the MCP server in `/root/.picoclaw/config.json`.
 - `piccolo-gws mcp --config-dir /root/.piccolo/integrations/gws --read-only` runs the stdio MCP server.
+- `piccolo-gws status --config-dir /root/.piccolo/integrations/gws --json` checks live Google Workspace connectivity and emits `piccolo.integration.status.v1` JSON for Piccolo.
 
 ## MCP tools
 
@@ -73,6 +75,8 @@ Workspace content is untrusted input. Email, documents, calendar descriptions, a
 ## Piccolo setup containers
 
 Piccolo discovers this package by running `piccolo-gws describe --json` in the gateway image, then runs the described setup command inside a setup container with a TTY. Setup stores Google integration state under `/root/.piccolo/integrations/gws` and merge-patches `/root/.picoclaw/config.json` to register the MCP server. Host workspace state is expected at `<workspace>/integrations/gws` and mounted to `/root/.piccolo/integrations/gws` in setup/runtime containers.
+
+Piccolo can also run the described status command with `piccolo integration status gws`. The status command performs live read-only checks against Google auth, Gmail, Calendar, and Drive by default, returning actionable remediation when authentication, scopes, APIs, or backend packaging need attention.
 
 Expected state paths:
 

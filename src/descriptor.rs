@@ -18,6 +18,7 @@ pub struct Descriptor {
 pub struct Commands {
     pub setup: CommandSpec,
     pub mcp: CommandSpec,
+    pub status: CommandSpec,
 }
 
 #[derive(Debug, Serialize)]
@@ -78,6 +79,10 @@ pub fn descriptor() -> Descriptor {
                 command: "piccolo-gws",
                 args: vec!["mcp", "--config-dir", DEFAULT_CONFIG_DIR, "--read-only"],
             },
+            status: CommandSpec {
+                command: "piccolo-gws",
+                args: vec!["status", "--config-dir", DEFAULT_CONFIG_DIR, "--json"],
+            },
         },
         setup: SetupMetadata {
             requires_tty: true,
@@ -128,6 +133,10 @@ mod tests {
         );
         assert_eq!(
             value["commands"]["mcp"]["args"][2],
+            crate::DEFAULT_CONFIG_DIR
+        );
+        assert_eq!(
+            value["commands"]["status"]["args"][2],
             crate::DEFAULT_CONFIG_DIR
         );
         let tools = value["mcp"]["tools"].as_array().unwrap();

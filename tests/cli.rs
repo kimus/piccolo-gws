@@ -1,6 +1,8 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn describe_json_cli_outputs_descriptor() {
@@ -23,6 +25,10 @@ fn describe_json_cli_outputs_descriptor() {
     );
     assert_eq!(
         value["commands"]["mcp"]["args"][2],
+        piccolo_gws::DEFAULT_CONFIG_DIR
+    );
+    assert_eq!(
+        value["commands"]["status"]["args"][2],
         piccolo_gws::DEFAULT_CONFIG_DIR
     );
 }
@@ -56,6 +62,91 @@ fn setup_patches_config_with_yes() {
         patched["tools"]["mcp"]["servers"]["google_workspace"]["args"][2],
         state.to_str().unwrap()
     );
+}
+
+#[test]
+fn status_json_reports_missing_backend() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = Command::cargo_bin("piccolo-gws")
+        .unwrap()
+        .env("PICCOLO_GWS_BACKEND_BIN", tmp.path().join("missing-gws"))
+        .args([
+            "status",
+            "--config-dir",
+            tmp.path().to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schema"], "piccolo.integration.status.v1");
+    assert_eq!(value["name"], "gws");
+    assert_eq!(value["status"], "fail");
+    let checks = value["checks"].as_array().unwrap();
+    assert!(checks
+        .iter()
+        .any(|c| c["id"] == "backend" && c["status"] == "fail"));
+    assert!(checks
+        .iter()
+        .any(|c| c["id"] == "gmail" && c["status"] == "skip"));
+}
+
+#[test]
+#[cfg(unix)]
+fn status_json_reports_live_service_success() {
+    let tmp = tempfile::tempdir().unwrap();
+    let fake = tmp.path().join("gws-fake");
+    std::fs::write(
+        &fake,
+        r#"#!/bin/sh
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi
+printf '[]\n'
+exit 0
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fake, perms).unwrap();
+    let output = Command::cargo_bin("piccolo-gws")
+        .unwrap()
+        .env("PICCOLO_GWS_BACKEND_BIN", &fake)
+        .args([
+            "status",
+            "--config-dir",
+            tmp.path().to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["status"], "ok");
+    let checks = value["checks"].as_array().unwrap();
+    assert!(checks
+        .iter()
+        .any(|c| c["id"] == "gmail" && c["status"] == "ok"));
+    assert!(checks
+        .iter()
+        .any(|c| c["id"] == "calendar" && c["status"] == "ok"));
+    assert!(checks
+        .iter()
+        .any(|c| c["id"] == "drive" && c["status"] == "ok"));
+}
+
+#[test]
+fn status_requires_json() {
+    Command::cargo_bin("piccolo-gws")
+        .unwrap()
+        .args(["status"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("only --json output is supported"));
 }
 
 #[test]

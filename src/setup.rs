@@ -46,38 +46,42 @@ fn ensure_google_auth(config_dir: &Path, assume_yes: bool) -> Result<()> {
     match gws_auth_status(&auth_dir) {
         Ok(true) => {
             println!("gws auth status: ok");
-            return Ok(());
+            if assume_yes {
+                return Ok(());
+            }
+            println!("\nGoogle Workspace auth is already configured for this Piccolo workspace.");
+            println!("Use delegated setup to change Google Cloud/OAuth configuration, or login to switch/refresh credentials.");
+            if !prompt_gws_auth(
+                &auth_dir,
+                "Reconfigure Google auth? [s]etup / [l]ogin / [n]one: ",
+            )? {
+                return Ok(());
+            }
         }
-        Ok(false) => println!("gws auth status: login required"),
-        Err(err) => println!("Could not check gws auth status: {err}"),
-    }
-
-    println!("\nGoogle Workspace is not authenticated for this Piccolo workspace.");
-    println!("Setup can delegate to the packaged gws CLI. Use 'setup' for first-time Google Cloud project/API/OAuth configuration, or 'login' if credentials are already configured.");
-    if assume_yes {
-        println!("Skipping delegated gws auth in --yes mode. Run `piccolo integration setup gws` interactively to complete Google login.");
-        return Ok(());
-    }
-
-    loop {
-        print!("Run gws auth now? [s]etup / [l]ogin / [n]one: ");
-        io::stdout().flush()?;
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        match input.trim().to_ascii_lowercase().as_str() {
-            "s" | "setup" => {
-                run_gws_auth(&auth_dir, "setup")?;
-                break;
+        Ok(false) => {
+            println!("gws auth status: login required");
+            println!("\nGoogle Workspace is not authenticated for this Piccolo workspace.");
+            println!("Setup can delegate to the packaged gws CLI. Use 'setup' for first-time Google Cloud project/API/OAuth configuration, or 'login' if credentials are already configured.");
+            if assume_yes {
+                println!("Skipping delegated gws auth in --yes mode. Run `piccolo integration setup gws` interactively to complete Google login.");
+                return Ok(());
             }
-            "l" | "login" => {
-                run_gws_auth(&auth_dir, "login")?;
-                break;
-            }
-            "n" | "no" | "" => {
+            if !prompt_gws_auth(&auth_dir, "Run gws auth now? [s]etup / [l]ogin / [n]one: ")? {
                 println!("Skipping Google auth. MCP tools will report login_required until auth is completed.");
                 return Ok(());
             }
-            _ => println!("Please enter s, l, or n."),
+        }
+        Err(err) => {
+            println!("Could not check gws auth status: {err}");
+            println!("\nSetup can delegate to the packaged gws CLI. Use 'setup' for first-time Google Cloud project/API/OAuth configuration, or 'login' if credentials are already configured.");
+            if assume_yes {
+                println!("Skipping delegated gws auth in --yes mode. Run `piccolo integration setup gws` interactively to complete Google login.");
+                return Ok(());
+            }
+            if !prompt_gws_auth(&auth_dir, "Run gws auth now? [s]etup / [l]ogin / [n]one: ")? {
+                println!("Skipping Google auth.");
+                return Ok(());
+            }
         }
     }
 
@@ -87,6 +91,27 @@ fn ensure_google_auth(config_dir: &Path, assume_yes: bool) -> Result<()> {
         Err(err) => println!("Could not re-check gws auth status: {err}"),
     }
     Ok(())
+}
+
+fn prompt_gws_auth(auth_dir: &Path, prompt: &str) -> Result<bool> {
+    loop {
+        print!("{prompt}");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        match input.trim().to_ascii_lowercase().as_str() {
+            "s" | "setup" => {
+                run_gws_auth(auth_dir, "setup")?;
+                return Ok(true);
+            }
+            "l" | "login" => {
+                run_gws_auth(auth_dir, "login")?;
+                return Ok(true);
+            }
+            "n" | "no" | "" => return Ok(false),
+            _ => println!("Please enter s, l, or n."),
+        }
+    }
 }
 
 fn gws_auth_status(auth_dir: &Path) -> Result<bool> {
