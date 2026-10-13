@@ -1,17 +1,16 @@
-use assert_cmd::Command;
-use predicates::prelude::*;
 use serde_json::Value;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+use std::process::{Command, Output};
 
 #[test]
 fn describe_json_cli_outputs_descriptor() {
-    let output = Command::cargo_bin("piccolo-gws")
-        .unwrap()
+    let output = piccolo_gws_cmd()
         .args(["describe", "--json"])
         .output()
         .unwrap();
-    assert!(output.status.success());
+    assert_success(&output);
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["schema"], "piccolo.integration.v1");
     assert_eq!(value["name"], "gws");
@@ -35,12 +34,11 @@ fn describe_json_cli_outputs_descriptor() {
 
 #[test]
 fn setup_patches_config_with_yes() {
-    let tmp = tempfile::tempdir().unwrap();
-    let state = tmp.path().join("state");
-    let config = tmp.path().join("config.json");
+    let tmp = test_temp_dir("setup");
+    let state = tmp.join("state");
+    let config = tmp.join("config.json");
     std::fs::write(&config, r#"{"unknown":true}"#).unwrap();
-    Command::cargo_bin("piccolo-gws")
-        .unwrap()
+    let output = piccolo_gws_cmd()
         .args([
             "setup",
             "--config-dir",
@@ -49,9 +47,10 @@ fn setup_patches_config_with_yes() {
             config.to_str().unwrap(),
             "--yes",
         ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Updated"));
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Updated"));
     let patched: Value = serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
     assert_eq!(patched["unknown"], true);
     assert_eq!(
@@ -66,16 +65,10 @@ fn setup_patches_config_with_yes() {
 
 #[test]
 fn status_json_reports_missing_backend() {
-    let tmp = tempfile::tempdir().unwrap();
-    let output = Command::cargo_bin("piccolo-gws")
-        .unwrap()
-        .env("PICCOLO_GWS_BACKEND_BIN", tmp.path().join("missing-gws"))
-        .args([
-            "status",
-            "--config-dir",
-            tmp.path().to_str().unwrap(),
-            "--json",
-        ])
+    let tmp = test_temp_dir("missing-backend");
+    let output = piccolo_gws_cmd()
+        .env("PICCOLO_GWS_BACKEND_BIN", tmp.join("missing-gws"))
+        .args(["status", "--config-dir", tmp.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -95,8 +88,8 @@ fn status_json_reports_missing_backend() {
 #[test]
 #[cfg(unix)]
 fn status_json_reports_live_service_success() {
-    let tmp = tempfile::tempdir().unwrap();
-    let fake = tmp.path().join("gws-fake");
+    let tmp = test_temp_dir("live-success");
+    let fake = tmp.join("gws-fake");
     std::fs::write(
         &fake,
         r#"#!/bin/sh
@@ -109,22 +102,12 @@ exit 0
     let mut perms = std::fs::metadata(&fake).unwrap().permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(&fake, perms).unwrap();
-    let output = Command::cargo_bin("piccolo-gws")
-        .unwrap()
+    let output = piccolo_gws_cmd()
         .env("PICCOLO_GWS_BACKEND_BIN", &fake)
-        .args([
-            "status",
-            "--config-dir",
-            tmp.path().to_str().unwrap(),
-            "--json",
-        ])
+        .args(["status", "--config-dir", tmp.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_success(&output);
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["status"], "ok");
     let checks = value["checks"].as_array().unwrap();
@@ -141,24 +124,55 @@ exit 0
 
 #[test]
 fn status_requires_json() {
-    Command::cargo_bin("piccolo-gws")
-        .unwrap()
-        .args(["status"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("only --json output is supported"));
+    let output = piccolo_gws_cmd().args(["status"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("only --json output is supported"));
 }
 
 #[test]
 fn mcp_initialize_over_stdio_starts() {
-    Command::cargo_bin("piccolo-gws")
-        .unwrap()
+    let output = piccolo_gws_cmd()
         .args(["mcp", "--config-dir", "/tmp/piccolo-gws-test"])
-        .write_stdin(
-            "Content-Length: 46\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}",
-        )
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Content-Length:"))
-        .stdout(predicate::str::contains("piccolo-gws"));
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.as_mut().unwrap().write_all(
+                b"Content-Length: 46\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}",
+            )?;
+            child.wait_with_output()
+        })
+        .unwrap();
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Content-Length:"));
+    assert!(stdout.contains("piccolo-gws"));
+}
+
+fn piccolo_gws_cmd() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_piccolo-gws"))
+}
+
+fn assert_success(output: &Output) {
+    assert!(
+        output.status.success(),
+        "status={:?}\nstdout={}\nstderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn test_temp_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "piccolo-gws-{name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
 }

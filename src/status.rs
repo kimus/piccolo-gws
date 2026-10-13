@@ -321,9 +321,9 @@ mod tests {
 
     #[test]
     fn picoclaw_config_check_accepts_expected_server() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cfg = tmp.path().join("config.json");
-        let state = tmp.path().join("state");
+        let tmp = test_temp_dir("config-ok");
+        let cfg = tmp.join("config.json");
+        let state = tmp.join("state");
         std::fs::write(&cfg, serde_json::to_vec(&json!({"tools":{"mcp":{"servers":{"google_workspace":{"command":"piccolo-gws","args":["mcp","--config-dir",state.to_string_lossy(),"--read-only"]}}}}})).unwrap()).unwrap();
         let check = picoclaw_config_check(&cfg, &state);
         assert_eq!(check.status, CheckStatus::Ok);
@@ -331,9 +331,9 @@ mod tests {
 
     #[test]
     fn picoclaw_config_check_reports_mismatch() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cfg = tmp.path().join("config.json");
-        let state = tmp.path().join("state");
+        let tmp = test_temp_dir("config-mismatch");
+        let cfg = tmp.join("config.json");
+        let state = tmp.join("state");
         std::fs::write(&cfg, b"{\"tools\":{}}").unwrap();
         let check = picoclaw_config_check(&cfg, &state);
         assert_eq!(check.status, CheckStatus::Fail);
@@ -345,5 +345,18 @@ mod tests {
         assert!(remediation_for("insufficient scope").contains("scopes"));
         assert!(remediation_for("backend_timeout").contains("network"));
         assert!(remediation_for("API disabled").contains("Enable"));
+    }
+
+    fn test_temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "piccolo-gws-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }

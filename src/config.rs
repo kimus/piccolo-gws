@@ -133,11 +133,24 @@ mod tests {
 
     #[test]
     fn backup_created_before_write() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config = tmp.path().join("config.json");
+        let tmp = test_temp_dir("backup-created");
+        let config = tmp.join("config.json");
         fs::write(&config, "{\"keep\":true}\n").unwrap();
         let backup = write_config_with_backup(&config, &json!({"next": true})).unwrap();
         assert!(backup.exists());
         assert_eq!(read_config(&config).unwrap()["next"], true);
+    }
+
+    fn test_temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "piccolo-gws-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }
