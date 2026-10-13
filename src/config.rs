@@ -63,7 +63,7 @@ pub fn read_config(path: &Path) -> Result<Value> {
     if bytes.iter().all(|b| b.is_ascii_whitespace()) {
         return Ok(json!({}));
     }
-    Ok(serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))?)
+    serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))
 }
 
 pub fn backup_path(path: &Path) -> PathBuf {

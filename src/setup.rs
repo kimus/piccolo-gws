@@ -1,15 +1,129 @@
 use crate::config;
 use anyhow::{Context, Result};
-use std::io::{self, Write};
-use std::path::Path;
-use std::process::{Command, Stdio};
+use inquire::{Confirm, Select};
+use serde_json::Value;
+use std::io::{self, IsTerminal};
+use std::path::{Path, PathBuf};
+
+/// Where OAuth client credentials currently come from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialSource {
+    /// `client_secret.json` inside the integration auth directory.
+    File,
+    /// `GOOGLE_WORKSPACE_CLI_CLIENT_ID` + `GOOGLE_WORKSPACE_CLI_CLIENT_SECRET`.
+    EnvVars,
+    /// No usable client credentials; login/refresh cannot run.
+    None,
+}
+
+impl CredentialSource {
+    pub fn configured(&self) -> bool {
+        !matches!(self, CredentialSource::None)
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            CredentialSource::File => "client_secret.json",
+            CredentialSource::EnvVars => "environment variables",
+            CredentialSource::None => "missing",
+        }
+    }
+}
+
+/// Point-in-time view of what the runtime can actually do.
+#[derive(Debug, Clone)]
+pub struct AuthSnapshot {
+    pub auth_dir: PathBuf,
+    pub gws_available: bool,
+    pub gcloud_available: bool,
+    pub credentials: CredentialSource,
+    pub account_authorized: bool,
+}
+
+impl AuthSnapshot {
+    pub fn access_ready(&self) -> bool {
+        self.credentials.configured() && self.account_authorized
+    }
+}
+
+/// Pure credential-source resolution so detection stays unit-testable.
+pub fn detect_credential_source(
+    file_exists: bool,
+    env_id_set: bool,
+    env_secret_set: bool,
+) -> CredentialSource {
+    if file_exists {
+        return CredentialSource::File;
+    }
+    if env_id_set && env_secret_set {
+        return CredentialSource::EnvVars;
+    }
+    CredentialSource::None
+}
+
+/// Reason login cannot run yet, if it cannot.
+pub fn login_block_reason(snapshot: &AuthSnapshot) -> Option<&'static str> {
+    if snapshot.credentials.configured() {
+        None
+    } else {
+        Some("Login requires OAuth credentials first. Choose Create credentials or Import credentials.")
+    }
+}
+
+/// Validate pasted `client_secret.json` content without trusting a specific shape.
+pub fn validate_client_secret(raw: &str) -> std::result::Result<(), String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("No content was pasted.".to_string());
+    }
+    let value: Value = serde_json::from_str(trimmed)
+        .map_err(|err| format!("The pasted text is not valid JSON ({err})."))?;
+    let candidates: Vec<&Value> = vec![
+        &value,
+        value.get("installed").unwrap_or(&Value::Null),
+        value.get("web").unwrap_or(&Value::Null),
+    ];
+    let has_pair = |obj: &Value| -> bool {
+        let non_empty = |key: &str| {
+            obj.get(key)
+                .and_then(Value::as_str)
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false)
+        };
+        non_empty("client_id") && non_empty("client_secret")
+    };
+    if candidates.iter().any(|obj| has_pair(obj)) {
+        return Ok(());
+    }
+    Err(
+        "Could not find an OAuth client id and secret. Expected a client_secret.json containing \
+         \"client_id\" and \"client_secret\" (often nested under \"installed\" or \"web\")."
+            .to_string(),
+    )
+}
 
 pub fn run_setup(config_dir: &Path, picoclaw_config: &Path, assume_yes: bool) -> Result<()> {
     println!("Google Workspace integration setup");
     println!("State directory: {}", config_dir.display());
     config::ensure_state_dir(config_dir)?;
 
-    ensure_google_auth(config_dir, assume_yes)?;
+    let auth_dir = config_dir.join("auth");
+    std::fs::create_dir_all(&auth_dir)
+        .with_context(|| format!("creating auth directory {}", auth_dir.display()))?;
+
+    if assume_yes {
+        let snapshot = capture_snapshot(&auth_dir);
+        print_state(&snapshot);
+        if !snapshot.access_ready() {
+            println!("Authentication is still incomplete; run setup interactively to finish it.");
+            println!("  piccolo integration setup kimus/piccolo-gws");
+        }
+    } else if io::stdin().is_terminal() {
+        guided_menu(&auth_dir)?;
+    } else {
+        println!("No terminal attached; skipping interactive Google auth setup.");
+        println!("Re-run setup interactively (or with --yes after completing auth) to configure Google access.");
+    }
 
     let mut current = config::read_config(picoclaw_config)?;
     let patch = config::mcp_server_patch(config_dir);
@@ -20,7 +134,19 @@ pub fn run_setup(config_dir: &Path, picoclaw_config: &Path, assume_yes: bool) ->
         config::summarize_patch(&before, &current)
     );
 
-    if !assume_yes && !confirm("Apply this config patch? [y/N] ")? {
+    let apply = if assume_yes {
+        true
+    } else if io::stdin().is_terminal() {
+        Confirm::new("Apply this config patch?")
+            .with_default(false)
+            .prompt()
+            .unwrap_or(false)
+    } else {
+        println!("Skipping config write without confirmation (pass --yes to apply).");
+        false
+    };
+
+    if !apply {
         println!("Setup cancelled before writing config.");
         return Ok(());
     }
@@ -32,140 +158,311 @@ pub fn run_setup(config_dir: &Path, picoclaw_config: &Path, assume_yes: bool) ->
     Ok(())
 }
 
-fn ensure_google_auth(config_dir: &Path, assume_yes: bool) -> Result<()> {
-    let auth_dir = config_dir.join("auth");
-    std::fs::create_dir_all(&auth_dir)
-        .with_context(|| format!("creating auth directory {}", auth_dir.display()))?;
-    println!("\nAuthentication backend: gws CLI (delegated)");
-    println!("Store OAuth/backend state under: {}", auth_dir.display());
-    if !has_oauth_client(&auth_dir) {
-        println!("OAuth client: not configured");
-        println_oauth_client_guidance(&auth_dir);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Action {
+    Guided,
+    Create,
+    Import,
+    Login,
+    Manual,
+    Skip,
+}
+
+impl std::fmt::Display for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Action::Guided => "Set up Google Workspace access",
+            Action::Create => "Create credentials",
+            Action::Import => "Import credentials",
+            Action::Login => "Login / authorize Google account",
+            Action::Manual => "Manual instructions",
+            Action::Skip => "Skip",
+        };
+        f.write_str(label)
     }
-    if which::which("gws").is_err() {
-        println!("gws executable not found on PATH; the packaged runtime wrapper should provide it in Piccolo images.");
+}
+
+fn capture_snapshot(auth_dir: &Path) -> AuthSnapshot {
+    let credentials = detect_credential_source(
+        auth_dir.join("client_secret.json").is_file(),
+        non_empty_env("GOOGLE_WORKSPACE_CLI_CLIENT_ID"),
+        non_empty_env("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET"),
+    );
+    let gws_available = which::which("gws").is_ok();
+    AuthSnapshot {
+        auth_dir: auth_dir.to_path_buf(),
+        gws_available,
+        gcloud_available: which::which("gcloud").is_ok(),
+        credentials,
+        account_authorized: gws_available && gws_auth_status(auth_dir),
+    }
+}
+
+fn non_empty_env(key: &str) -> bool {
+    std::env::var(key)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn print_state(snapshot: &AuthSnapshot) {
+    println!("\nCurrent Google Workspace state:");
+    println!("  gws CLI:           {}", yes_no(snapshot.gws_available));
+    println!("  gcloud (SDK):      {}", yes_no(snapshot.gcloud_available));
+    println!("  OAuth client:      {}", snapshot.credentials.label());
+    println!(
+        "  Google account:    {}",
+        if !snapshot.credentials.configured() && snapshot.account_authorized {
+            "token present but unusable without credentials"
+        } else if snapshot.account_authorized {
+            "authorized"
+        } else {
+            "not authorized"
+        }
+    );
+}
+
+fn yes_no(v: bool) -> &'static str {
+    if v {
+        "available"
+    } else {
+        "not found"
+    }
+}
+
+fn guided_menu(auth_dir: &Path) -> Result<()> {
+    let mut snapshot = capture_snapshot(auth_dir);
+    print_state(&snapshot);
+    if !snapshot.gws_available {
+        println!("\ngws executable not found on PATH; the packaged runtime should provide it.");
         return Ok(());
     }
 
-    match gws_auth_status(&auth_dir) {
-        Ok(true) => {
-            println!("gws auth status: ok");
-            if assume_yes {
-                return Ok(());
-            }
-            println!("\nGoogle Workspace auth token/state is present for this Piccolo workspace.");
-            if !has_oauth_client(&auth_dir) {
-                println!(
-                    "OAuth client configuration is still missing, so login/refresh cannot run yet."
-                );
-            } else {
-                println!("Use delegated setup to change Google Cloud/OAuth configuration, or login to switch/refresh credentials.");
-            }
-            if !prompt_gws_auth(
-                &auth_dir,
-                "Reconfigure Google auth? [s]etup / [l]ogin / [n]one: ",
-            )? {
-                return Ok(());
-            }
-        }
-        Ok(false) => {
-            println!("gws auth status: login required");
-            println!("\nGoogle Workspace is not authenticated for this Piccolo workspace.");
-            println!("Setup can delegate to the packaged gws CLI. Use 'setup' for first-time Google Cloud project/API/OAuth configuration, or 'login' if an OAuth client is already configured.");
-            if assume_yes {
-                println!("Skipping delegated gws auth in --yes mode. Run `piccolo integration setup gws` interactively to complete Google login.");
-                return Ok(());
-            }
-            if !prompt_gws_auth(&auth_dir, "Run gws auth now? [s]etup / [l]ogin / [n]one: ")? {
-                println!("Skipping Google auth. MCP tools will report login_required until auth is completed.");
+    loop {
+        let items = vec![
+            Action::Guided,
+            Action::Create,
+            Action::Import,
+            Action::Login,
+            Action::Manual,
+            Action::Skip,
+        ];
+        let chosen = Select::new("What do you want to do?", items)
+            .with_help_message(
+                "Credentials identify the app; login authorizes your Google account.",
+            )
+            .prompt()
+            .map_err(|err| anyhow::anyhow!("setup selection failed: {err}"))?;
+
+        match chosen {
+            Action::Guided => guided_flow(auth_dir, &mut snapshot)?,
+            Action::Create => create_credentials(auth_dir, &mut snapshot)?,
+            Action::Import => import_credentials(auth_dir, &mut snapshot)?,
+            Action::Login => authorize_account(auth_dir, &mut snapshot)?,
+            Action::Manual => print_manual_instructions(auth_dir),
+            Action::Skip => {
+                println!("Skipping Google auth. Workspace tools will report login-required until it is completed.");
                 return Ok(());
             }
         }
-        Err(err) => {
-            println!("Could not check gws auth status: {err}");
-            println!("\nSetup can delegate to the packaged gws CLI. Use 'setup' for first-time Google Cloud project/API/OAuth configuration, or 'login' if an OAuth client is already configured.");
-            if assume_yes {
-                println!("Skipping delegated gws auth in --yes mode. Run `piccolo integration setup gws` interactively to complete Google login.");
-                return Ok(());
+
+        print_state(&snapshot);
+        if snapshot.access_ready() {
+            println!("\nGoogle Workspace access is configured.");
+            return Ok(());
+        }
+        if !Confirm::new("Continue with more auth options?")
+            .with_default(true)
+            .prompt()
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+    }
+}
+
+fn guided_flow(auth_dir: &Path, snapshot: &mut AuthSnapshot) -> Result<()> {
+    if !snapshot.credentials.configured() {
+        if snapshot.gcloud_available {
+            println!("\nNo OAuth client is configured. 'gws auth setup' can create or select a Google Cloud project and OAuth credentials.");
+            if confirm_default_yes("Create Google credentials now?") {
+                match run_gws_auth(auth_dir, "setup") {
+                    Ok(()) => *snapshot = capture_snapshot(auth_dir),
+                    Err(err) => {
+                        println!("Credential setup did not complete: {err}");
+                        offer_fallback(auth_dir, snapshot)?;
+                    }
+                }
             }
-            if !prompt_gws_auth(&auth_dir, "Run gws auth now? [s]etup / [l]ogin / [n]one: ")? {
-                println!("Skipping Google auth.");
-                return Ok(());
-            }
+        } else {
+            println!("\nNo OAuth client is configured, and creating one requires the Google Cloud SDK (`gcloud`), which is not available here.");
+            offer_fallback(auth_dir, snapshot)?;
         }
     }
 
-    match gws_auth_status(&auth_dir) {
-        Ok(true) => println!("gws auth status: ok"),
-        Ok(false) => println!("gws auth status still requires attention."),
-        Err(err) => println!("Could not re-check gws auth status: {err}"),
+    if !snapshot.credentials.configured() {
+        println!("Still no OAuth client credentials, so Google account authorization cannot run.");
+        return Ok(());
+    }
+
+    if snapshot.account_authorized {
+        if confirm_default_no("Re-authorize / switch Google account?") {
+            authorize_account(auth_dir, snapshot)?;
+        }
+        return Ok(());
+    }
+
+    println!("\nNext: authorize your Google account in the browser.");
+    if confirm_default_yes("Open Google login now?") {
+        authorize_account(auth_dir, snapshot)?;
+    } else {
+        println!("Authorization skipped; tools will report login-required until it is completed.");
     }
     Ok(())
 }
 
-fn prompt_gws_auth(auth_dir: &Path, prompt: &str) -> Result<bool> {
-    loop {
-        print!("{prompt}");
-        io::stdout().flush()?;
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        match input.trim().to_ascii_lowercase().as_str() {
-            "s" | "setup" => {
-                if which::which("gcloud").is_err() {
-                    println!("\n`gws auth setup` requires the Google Cloud SDK (`gcloud`).");
-                    println!("Piccolo's default runtime image does not package it because it adds hundreds of MB to every workspace.");
-                    println_oauth_client_guidance(auth_dir);
-                    if has_oauth_client(auth_dir)
-                        && confirm("Run `gws auth login` instead? [y/N] ")?
-                    {
-                        run_gws_auth(auth_dir, "login")?;
-                        return Ok(true);
-                    }
-                    return Ok(false);
-                }
-                run_gws_auth(auth_dir, "setup")?;
-                return Ok(true);
-            }
-            "l" | "login" => {
-                if !has_oauth_client(auth_dir) {
-                    println!("\nCannot run `gws auth login` yet: no OAuth client is configured.");
-                    println_oauth_client_guidance(auth_dir);
-                    return Ok(false);
-                }
-                run_gws_auth(auth_dir, "login")?;
-                return Ok(true);
-            }
-            "n" | "no" | "" => return Ok(false),
-            _ => println!("Please enter s, l, or n."),
-        }
+fn offer_fallback(auth_dir: &Path, snapshot: &mut AuthSnapshot) -> Result<()> {
+    let items = vec![Action::Import, Action::Manual, Action::Skip];
+    let chosen = Select::new("How do you want to proceed?", items)
+        .prompt()
+        .map_err(|err| anyhow::anyhow!("setup selection failed: {err}"))?;
+    match chosen {
+        Action::Import => import_credentials(auth_dir, snapshot)?,
+        Action::Manual => print_manual_instructions(auth_dir),
+        _ => println!("Auth left for later; rerun setup when ready."),
     }
+    Ok(())
 }
 
-fn has_oauth_client(auth_dir: &Path) -> bool {
-    auth_dir.join("client_secret.json").is_file()
-        || (std::env::var_os("GOOGLE_WORKSPACE_CLI_CLIENT_ID").is_some()
-            && std::env::var_os("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET").is_some())
+fn create_credentials(auth_dir: &Path, snapshot: &mut AuthSnapshot) -> Result<()> {
+    if !snapshot.gcloud_available {
+        println!("\n'gws auth setup' needs the Google Cloud SDK (`gcloud`), which is not available in this runtime.");
+        println!("Import pasted credentials or follow the manual instructions instead.");
+        return Ok(());
+    }
+    match run_gws_auth(auth_dir, "setup") {
+        Ok(()) => {
+            println!("OAuth client credentials are configured.");
+            *snapshot = capture_snapshot(auth_dir);
+            if snapshot.credentials.configured() && !snapshot.account_authorized {
+                authorize_account(auth_dir, snapshot)?;
+            }
+        }
+        Err(err) => println!("Credential setup did not complete: {err}"),
+    }
+    Ok(())
 }
 
-fn println_oauth_client_guidance(auth_dir: &Path) {
-    println!("Configure an OAuth client before logging in:");
+fn import_credentials(auth_dir: &Path, snapshot: &mut AuthSnapshot) -> Result<()> {
+    let target = auth_dir.join("client_secret.json");
+    if target.is_file() && !confirm_default_no("A client_secret.json already exists. Replace it?") {
+        return Ok(());
+    }
+    println!("Paste the full client_secret.json content, then submit an empty line ('.' on its own line also ends input).");
+    let pasted = read_pasted_json()?;
+    if let Err(reason) = validate_client_secret(&pasted) {
+        println!("Not saved: {reason}");
+        return Ok(());
+    }
+    std::fs::write(&target, pasted.as_bytes())
+        .with_context(|| format!("writing {}", target.display()))?;
+    println!("Saved OAuth client credentials to {}", target.display());
+    *snapshot = capture_snapshot(auth_dir);
+    if snapshot.credentials.configured() && !snapshot.account_authorized {
+        authorize_account(auth_dir, snapshot)?;
+    }
+    Ok(())
+}
+
+fn read_pasted_json() -> Result<String> {
+    let mut buf = String::new();
+    let mut line = String::new();
+    let stdin = io::stdin();
+    loop {
+        line.clear();
+        let read = stdin
+            .read_line(&mut line)
+            .context("reading pasted credentials")?;
+        if read == 0 {
+            break;
+        }
+        if line.trim() == "." {
+            break;
+        }
+        buf.push_str(&line);
+    }
+    Ok(buf)
+}
+
+fn authorize_account(auth_dir: &Path, snapshot: &mut AuthSnapshot) -> Result<()> {
+    if let Some(reason) = login_block_reason(snapshot) {
+        println!("\n{reason}");
+        return Ok(());
+    }
+    println!("\nRunning: gws auth login (OAuth2 in the browser)");
+    println!("If the browser does not open automatically, open the printed URL in the container host's browser.");
+    println!("A localhost redirect may need a port forward from the container to the host.");
+    match run_gws_auth(auth_dir, "login") {
+        Ok(()) => println!("Google account authorization completed."),
+        Err(err) => println!("Login did not complete: {err}"),
+    }
+    *snapshot = capture_snapshot(auth_dir);
+    Ok(())
+}
+
+fn print_manual_instructions(auth_dir: &Path) {
+    println!("\nManual Google Workspace credential setup:");
     println!(
-        "  1. Create a Desktop OAuth client in Google Cloud Console and download client_secret.json"
+        "  1. In Google Cloud Console, create or select a project and enable the APIs you need"
     );
-    println!("  2. Save it to: {}/client_secret.json", auth_dir.display());
-    println!("  3. Rerun `piccolo integration setup kimus/piccolo-gws` and choose login");
-    println!("Alternatively set GOOGLE_WORKSPACE_CLI_CLIENT_ID and GOOGLE_WORKSPACE_CLI_CLIENT_SECRET in the container environment.");
+    println!("     (Gmail, Calendar, Drive).");
+    println!(
+        "  2. Create an OAuth client id of type 'Desktop app' and download client_secret.json."
+    );
+    println!(
+        "  3. Place that file at the integration auth directory so 'gws auth login' can use it:"
+    );
+    println!(
+        "       container: {}",
+        auth_dir.join("client_secret.json").display()
+    );
+    if let Some(host) = host_side_path(auth_dir) {
+        println!("       host:      {host}");
+    }
+    println!("  4. Alternatively provide credentials via GOOGLE_WORKSPACE_CLI_CLIENT_ID and");
+    println!("     GOOGLE_WORKSPACE_CLI_CLIENT_SECRET in the container environment.");
+    println!("  5. Rerun setup and choose 'Login / authorize Google account'.");
 }
 
-fn gws_auth_status(auth_dir: &Path) -> Result<bool> {
-    let output = gws_command(auth_dir)
+fn host_side_path(auth_dir: &Path) -> Option<String> {
+    let container_prefix = "/root/.piccolo/integrations/";
+    let text = auth_dir.to_string_lossy();
+    text.strip_prefix(container_prefix)
+        .map(|rest| format!("integrations/{rest}"))
+}
+
+fn confirm_default_yes(prompt: &str) -> bool {
+    Confirm::new(prompt)
+        .with_default(true)
+        .prompt()
+        .unwrap_or(false)
+}
+
+fn confirm_default_no(prompt: &str) -> bool {
+    Confirm::new(prompt)
+        .with_default(false)
+        .prompt()
+        .unwrap_or(false)
+}
+
+fn gws_auth_status(auth_dir: &Path) -> bool {
+    gws_command(auth_dir)
         .arg("auth")
         .arg("status")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .output()
-        .context("running gws auth status")?;
-    Ok(output.status.success())
+        .map(|out| out.status.success())
+        .unwrap_or(false)
 }
 
 fn run_gws_auth(auth_dir: &Path, subcommand: &str) -> Result<()> {
@@ -173,9 +470,9 @@ fn run_gws_auth(auth_dir: &Path, subcommand: &str) -> Result<()> {
     let status = gws_command(auth_dir)
         .arg("auth")
         .arg(subcommand)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
         .status()
         .with_context(|| format!("running gws auth {subcommand}"))?;
     if !status.success() {
@@ -184,41 +481,84 @@ fn run_gws_auth(auth_dir: &Path, subcommand: &str) -> Result<()> {
     Ok(())
 }
 
-fn gws_command(auth_dir: &Path) -> Command {
-    let mut cmd = Command::new("gws");
+fn gws_command(auth_dir: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("gws");
     cmd.env("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", auth_dir)
         // Older/internal wrappers may also honor this; setting both is harmless.
         .env("GWS_CONFIG_DIR", auth_dir);
     cmd
 }
 
-fn confirm(prompt: &str) -> Result<bool> {
-    print!("{prompt}");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    Ok(matches!(
-        input.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::has_oauth_client;
-    use std::fs;
+    use super::*;
 
     #[test]
-    fn detects_client_secret_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "piccolo-gws-setup-test-{}-{}",
-            std::process::id(),
-            "client-secret"
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("client_secret.json"), "{}").unwrap();
-        assert!(has_oauth_client(&dir));
-        let _ = fs::remove_dir_all(&dir);
+    fn detects_client_secret_file_first() {
+        let dir = std::env::temp_dir().join(format!("piccolo-gws-setup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("client_secret.json"), "{}").unwrap();
+        assert_eq!(
+            detect_credential_source(dir.join("client_secret.json").is_file(), false, false),
+            CredentialSource::File
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn env_pair_counts_as_credentials() {
+        assert_eq!(
+            detect_credential_source(false, true, true),
+            CredentialSource::EnvVars
+        );
+        assert_eq!(
+            detect_credential_source(false, true, false),
+            CredentialSource::None
+        );
+    }
+
+    #[test]
+    fn login_blocked_without_credentials() {
+        let snapshot = snapshot_with(CredentialSource::None);
+        assert!(login_block_reason(&snapshot).is_some());
+        let snapshot = snapshot_with(CredentialSource::File);
+        assert!(login_block_reason(&snapshot).is_none());
+    }
+
+    #[test]
+    fn accepts_installed_and_web_shapes() {
+        let installed = r#"{"installed":{"client_id":"abc.apps.googleusercontent.com","client_secret":"s3cret"}}"#;
+        assert!(validate_client_secret(installed).is_ok());
+        let web = r#"{"web":{"client_id":"id","client_secret":"secret"}}"#;
+        assert!(validate_client_secret(web).is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_or_incomplete_input() {
+        assert!(validate_client_secret("").is_err());
+        assert!(validate_client_secret("not json").is_err());
+        let missing = r#"{"installed":{"client_id":"id"}}"#;
+        assert!(validate_client_secret(missing).is_err());
+    }
+
+    #[test]
+    fn host_path_translation_for_known_container_prefix() {
+        let auth = Path::new("/root/.piccolo/integrations/kimus/piccolo-gws/auth");
+        assert_eq!(
+            host_side_path(auth).as_deref(),
+            Some("integrations/kimus/piccolo-gws/auth")
+        );
+        assert_eq!(host_side_path(Path::new("/somewhere/else")), None);
+    }
+
+    fn snapshot_with(credentials: CredentialSource) -> AuthSnapshot {
+        AuthSnapshot {
+            auth_dir: PathBuf::from("/tmp/piccolo-gws-test"),
+            gws_available: true,
+            gcloud_available: true,
+            credentials,
+            account_authorized: false,
+        }
     }
 }
