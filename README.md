@@ -58,7 +58,7 @@ bin/gws
 share/piccolo/integration/bundle.json
 ```
 
-The default runtime bundle includes the lightweight `gws` backend, not the full Google Cloud SDK.
+The bundle includes the lightweight `gws` backend. It does not include the Google Cloud SDK; see [Guided setup](#guided-setup).
 
 ## Commands
 
@@ -66,6 +66,35 @@ The default runtime bundle includes the lightweight `gws` backend, not the full 
 - `piccolo-gws setup --config-dir /root/.piccolo/integrations/gws` prepares state and registers the MCP server in `/root/.picoclaw/config.json`.
 - `piccolo-gws mcp --config-dir /root/.piccolo/integrations/gws --read-only` runs the stdio MCP server.
 - `piccolo-gws status --config-dir /root/.piccolo/integrations/gws --json` checks live Google Workspace connectivity and emits `piccolo.integration.status.v1` JSON for Piccolo.
+
+## Guided setup
+
+`piccolo-gws setup` runs an interactive wizard (Rust [`inquire`](https://crates.io/crates/inquire)) inside the Piccolo setup container. It first reports the current state, then asks what to do:
+
+```text
+Set up Google Workspace access     recommended: credentials -> browser login -> config patch
+Import credentials                 paste an existing client_secret.json
+Login / authorize Google account   browser OAuth2 using existing credentials
+Manual instructions                Google Cloud Console steps + exact file locations
+Skip                               leave auth unconfigured for now
+```
+
+Two different things are easy to confuse, so the wizard keeps them separate:
+
+| Concept | What it is | Provided by |
+| --- | --- | --- |
+| OAuth client credentials | identifies the *application* | `client_secret.json` created once in Google Cloud Console, then imported |
+| Google account login | authorizes *your account* and stores refreshable tokens | `gws auth login` (opens a browser) |
+
+Credentials are needed once; login is needed once per account/scope set. The wizard will not run `gws auth login` when credentials are missing — it explains the prerequisite and routes you to import or manual instructions instead. A leftover token without credentials is reported as unusable rather than "configured".
+
+Imported credentials are validated as JSON containing a client id and client secret (accepted at the top level or nested under `installed`/`web`) before being written, are never echoed back, and overwriting an existing file requires confirmation.
+
+`piccolo-gws setup --yes` renders no prompts: it reports state, never blocks on auth, and still applies the PicoClaw config patch.
+
+The Google Cloud SDK (`gcloud`) is intentionally **not** a dependency of this package. Its closure is about 2 GiB, would be shipped in every release bundle and downloaded on every integration install, and it is only useful for automating a one-time step that Google Cloud Console already covers interactively. Create a *Desktop app* OAuth client once in the console and import it.
+
+Browser OAuth caveat: inside a container the consent page may not open automatically. Open the printed URL on the host, and forward the callback port if the redirect lands on `localhost` inside the container.
 
 ## MCP tools
 
@@ -82,7 +111,7 @@ The MCP server is read-only by default and exposes:
 
 - `src/main.rs` - CLI parsing and command dispatch.
 - `src/descriptor.rs` - Piccolo integration descriptor.
-- `src/setup.rs` - interactive setup and PicoClaw config patching.
+- `src/setup.rs` - guided interactive setup (state snapshot, credential import, browser login) and PicoClaw config patching.
 - `src/mcp.rs` - stdio MCP server and tool handlers.
 - `src/backend.rs` - wrapper around the delegated Google Workspace backend command.
 - `src/config.rs` - JSON config merge/update helpers.
@@ -101,7 +130,7 @@ Piccolo discovers this package by running `piccolo-gws describe --json` in the g
 
 Piccolo can also run the described status command with `piccolo integration status gws`. The status command performs live read-only checks against Google auth, Gmail, Calendar, and Drive by default, returning actionable remediation when authentication, scopes, APIs, or backend packaging need attention.
 
-Authentication uses the delegated `gws` backend. `gws auth login` works in the Piccolo runtime image. `gws auth setup` requires `gcloud` to provision/configure a Google Cloud project and OAuth client; release bundles intentionally do not package Google Cloud SDK by default because it adds hundreds of MB to every integration image. Use Google Cloud Console or a host-side `gcloud` install for one-time project/OAuth setup, then run Piccolo setup and choose `login`.
+Authentication uses the delegated `gws` backend. `gws auth login` performs browser OAuth2 inside the Piccolo runtime image. OAuth client credentials are created once in Google Cloud Console and imported through setup (`Import credentials`) or supplied via `GOOGLE_WORKSPACE_CLI_CLIENT_ID` / `GOOGLE_WORKSPACE_CLI_CLIENT_SECRET`; release bundles deliberately exclude the multi-gigabyte Google Cloud SDK.
 
 Expected state paths:
 

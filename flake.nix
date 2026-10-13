@@ -10,11 +10,11 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        # Runtime installs the lightweight `gws` backend. `gws auth setup`
-        # requires the much larger Google Cloud SDK, so Piccolo guides users to
-        # preconfigure OAuth externally or use `gws auth login` here instead of
-        # pulling the SDK into every runtime image.
-        runtimeDeps = [ (pkgs.gws or pkgs.google-cloud-sdk) ];
+        # Runtime installs the lightweight `gws` backend only. OAuth client
+        # credentials are created once in Google Cloud Console and imported via
+        # `piccolo-gws setup`, so the multi-gigabyte Google Cloud SDK is not a
+        # dependency of this package or its release bundles.
+        runtimeDeps = [ pkgs.gws ];
       in {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "piccolo-gws";
@@ -31,7 +31,7 @@
         apps.default = flake-utils.lib.mkApp { drv = self.packages.${system}.default; };
 
         devShells.default = pkgs.mkShell {
-          packages = [ pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.nix pkgs.google-cloud-sdk ];
+          packages = [ pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.nix ];
         };
       });
 }

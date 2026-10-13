@@ -29,10 +29,9 @@ The project SHALL publish Linux integration bundle artifacts that contain every 
 - **AND** the archive contains executable `bin/piccolo-gws`
 - **AND** the archive contains executable `bin/gws`
 
-#### Scenario: Bundle includes Google Cloud SDK
+#### Scenario: Bundle excludes Google Cloud SDK
 - **WHEN** a release bundle is created
-- **THEN** it includes `gcloud` so `gws auth setup` can create credentials inside the Piccolo runtime
-- **AND** the Google Cloud SDK ships as part of the bundle runtime closure rather than being downloaded per workspace
+- **THEN** it does not include Google Cloud SDK or `gcloud`
 
 ### Requirement: Validate release bundles in CI
 The release workflow SHALL validate each published bundle before uploading it.

@@ -35,7 +35,6 @@ impl CredentialSource {
 pub struct AuthSnapshot {
     pub auth_dir: PathBuf,
     pub gws_available: bool,
-    pub gcloud_available: bool,
     pub credentials: CredentialSource,
     pub account_authorized: bool,
 }
@@ -66,7 +65,7 @@ pub fn login_block_reason(snapshot: &AuthSnapshot) -> Option<&'static str> {
     if snapshot.credentials.configured() {
         None
     } else {
-        Some("Login requires OAuth credentials first. Choose Create credentials or Import credentials.")
+        Some("Login requires OAuth credentials first. Choose Import credentials or Manual instructions.")
     }
 }
 
@@ -161,7 +160,6 @@ pub fn run_setup(config_dir: &Path, picoclaw_config: &Path, assume_yes: bool) ->
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
     Guided,
-    Create,
     Import,
     Login,
     Manual,
@@ -172,7 +170,6 @@ impl std::fmt::Display for Action {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self {
             Action::Guided => "Set up Google Workspace access",
-            Action::Create => "Create credentials",
             Action::Import => "Import credentials",
             Action::Login => "Login / authorize Google account",
             Action::Manual => "Manual instructions",
@@ -192,7 +189,6 @@ fn capture_snapshot(auth_dir: &Path) -> AuthSnapshot {
     AuthSnapshot {
         auth_dir: auth_dir.to_path_buf(),
         gws_available,
-        gcloud_available: which::which("gcloud").is_ok(),
         credentials,
         account_authorized: gws_available && gws_auth_status(auth_dir),
     }
@@ -207,7 +203,6 @@ fn non_empty_env(key: &str) -> bool {
 fn print_state(snapshot: &AuthSnapshot) {
     println!("\nCurrent Google Workspace state:");
     println!("  gws CLI:           {}", yes_no(snapshot.gws_available));
-    println!("  gcloud (SDK):      {}", yes_no(snapshot.gcloud_available));
     println!("  OAuth client:      {}", snapshot.credentials.label());
     println!(
         "  Google account:    {}",
@@ -240,7 +235,6 @@ fn guided_menu(auth_dir: &Path) -> Result<()> {
     loop {
         let items = vec![
             Action::Guided,
-            Action::Create,
             Action::Import,
             Action::Login,
             Action::Manual,
@@ -255,7 +249,6 @@ fn guided_menu(auth_dir: &Path) -> Result<()> {
 
         match chosen {
             Action::Guided => guided_flow(auth_dir, &mut snapshot)?,
-            Action::Create => create_credentials(auth_dir, &mut snapshot)?,
             Action::Import => import_credentials(auth_dir, &mut snapshot)?,
             Action::Login => authorize_account(auth_dir, &mut snapshot)?,
             Action::Manual => print_manual_instructions(auth_dir),
@@ -282,21 +275,10 @@ fn guided_menu(auth_dir: &Path) -> Result<()> {
 
 fn guided_flow(auth_dir: &Path, snapshot: &mut AuthSnapshot) -> Result<()> {
     if !snapshot.credentials.configured() {
-        if snapshot.gcloud_available {
-            println!("\nNo OAuth client is configured. 'gws auth setup' can create or select a Google Cloud project and OAuth credentials.");
-            if confirm_default_yes("Create Google credentials now?") {
-                match run_gws_auth(auth_dir, "setup") {
-                    Ok(()) => *snapshot = capture_snapshot(auth_dir),
-                    Err(err) => {
-                        println!("Credential setup did not complete: {err}");
-                        offer_fallback(auth_dir, snapshot)?;
-                    }
-                }
-            }
-        } else {
-            println!("\nNo OAuth client is configured, and creating one requires the Google Cloud SDK (`gcloud`), which is not available here.");
-            offer_fallback(auth_dir, snapshot)?;
-        }
+        println!("\nNo OAuth client credentials are configured for this workspace.");
+        println!("OAuth client credentials identify the application and are created once in Google Cloud Console.");
+        println!("Import a downloaded client_secret.json here, or view the manual instructions.");
+        offer_fallback(auth_dir, snapshot)?;
     }
 
     if !snapshot.credentials.configured() {
@@ -329,25 +311,6 @@ fn offer_fallback(auth_dir: &Path, snapshot: &mut AuthSnapshot) -> Result<()> {
         Action::Import => import_credentials(auth_dir, snapshot)?,
         Action::Manual => print_manual_instructions(auth_dir),
         _ => println!("Auth left for later; rerun setup when ready."),
-    }
-    Ok(())
-}
-
-fn create_credentials(auth_dir: &Path, snapshot: &mut AuthSnapshot) -> Result<()> {
-    if !snapshot.gcloud_available {
-        println!("\n'gws auth setup' needs the Google Cloud SDK (`gcloud`), which is not available in this runtime.");
-        println!("Import pasted credentials or follow the manual instructions instead.");
-        return Ok(());
-    }
-    match run_gws_auth(auth_dir, "setup") {
-        Ok(()) => {
-            println!("OAuth client credentials are configured.");
-            *snapshot = capture_snapshot(auth_dir);
-            if snapshot.credentials.configured() && !snapshot.account_authorized {
-                authorize_account(auth_dir, snapshot)?;
-            }
-        }
-        Err(err) => println!("Credential setup did not complete: {err}"),
     }
     Ok(())
 }
@@ -556,7 +519,6 @@ mod tests {
         AuthSnapshot {
             auth_dir: PathBuf::from("/tmp/piccolo-gws-test"),
             gws_available: true,
-            gcloud_available: true,
             credentials,
             account_authorized: false,
         }
