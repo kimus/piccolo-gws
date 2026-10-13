@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '[0-9]*.[0-9]*.[0-9]*'
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    name: Build ${{ matrix.arch }} bundle
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build and smoke-test release bundle
+        run: scripts/package-release.sh "${GITHUB_REF_NAME}" dist
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: piccolo-gws-linux-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download bundle artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+
+      - name: Assemble release assets and manifest
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find dist-artifacts -type f -name '*.tar.gz' -exec cp {} dist/ \;
+          version="${GITHUB_REF_NAME}"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          version = os.environ["GITHUB_REF_NAME"]
+          artifacts = []
+          for path in sorted(pathlib.Path("dist").glob("piccolo-gws_*_linux_*.tar.gz")):
+              parts = path.name.removesuffix(".tar.gz").split("_")
+              arch = parts[-1]
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              artifacts.append({
+                  "platform": f"linux/{arch}",
+                  "asset": path.name,
+                  "sha256": digest,
+              })
+          if {a["platform"] for a in artifacts} != {"linux/amd64", "linux/arm64"}:
+              raise SystemExit(f"missing required platforms: {artifacts}")
+          manifest = {
+              "schema": "piccolo.integration.release.v1",
+              "package": "github:kimus/piccolo-gws",
+              "version": version,
+              "artifacts": artifacts,
+          }
+          pathlib.Path("dist/piccolo-integration-release.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          with open("dist/checksums.txt", "w") as f:
+              for path in sorted(pathlib.Path("dist").iterdir()):
+                  if path.is_file() and path.name != "checksums.txt":
+                      f.write(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n")
+          PY
+          cat dist/piccolo-integration-release.json
+          cat dist/checksums.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: dist/*
+          fail_on_unmatched_files: true

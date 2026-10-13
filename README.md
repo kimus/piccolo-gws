@@ -35,7 +35,30 @@ nix build
 ./result/bin/piccolo-gws describe --json
 ```
 
-The flake installs the `piccolo-gws` binary and wraps it with declared runtime dependencies on `PATH`. The default runtime includes the lightweight `gws` backend, not the full Google Cloud SDK.
+The flake installs the `piccolo-gws` binary and wraps it with declared runtime dependencies on `PATH`. This remains the source-build/development path.
+
+## Release bundles for Piccolo
+
+Product Piccolo installs should use GitHub Release bundles instead of building this repository from source inside a user's runtime image. Release tags for this project are bare versions such as `3.1.0`.
+
+Each Piccolo integration release uploads:
+
+```text
+piccolo-integration-release.json
+piccolo-gws_<version>_linux_amd64.tar.gz
+piccolo-gws_<version>_linux_arm64.tar.gz
+checksums.txt
+```
+
+Each archive contains:
+
+```text
+bin/piccolo-gws
+bin/gws
+share/piccolo/integration/bundle.json
+```
+
+The default runtime bundle includes the lightweight `gws` backend, not the full Google Cloud SDK.
 
 ## Commands
 
@@ -78,7 +101,7 @@ Piccolo discovers this package by running `piccolo-gws describe --json` in the g
 
 Piccolo can also run the described status command with `piccolo integration status gws`. The status command performs live read-only checks against Google auth, Gmail, Calendar, and Drive by default, returning actionable remediation when authentication, scopes, APIs, or backend packaging need attention.
 
-Authentication uses the delegated `gws` backend. `gws auth login` works in the Piccolo runtime image. `gws auth setup` requires `gcloud` to provision/configure a Google Cloud project and OAuth client; Piccolo intentionally does not package Google Cloud SDK by default because it adds hundreds of MB to every integration image. Use Google Cloud Console or a host-side `gcloud` install for one-time project/OAuth setup, then run Piccolo setup and choose `login`.
+Authentication uses the delegated `gws` backend. `gws auth login` works in the Piccolo runtime image. `gws auth setup` requires `gcloud` to provision/configure a Google Cloud project and OAuth client; release bundles intentionally do not package Google Cloud SDK by default because it adds hundreds of MB to every integration image. Use Google Cloud Console or a host-side `gcloud` install for one-time project/OAuth setup, then run Piccolo setup and choose `login`.
 
 Expected state paths:
 
