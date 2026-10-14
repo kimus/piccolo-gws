@@ -120,6 +120,28 @@ showing a diff, asking for confirmation, and writing `config.json.bak`. One
 writer means one backup convention and one confirmation gate for a file that
 belongs to the user.
 
+### Do not register a redirect URI
+
+The login callback port is chosen by the operating system for every attempt, so it
+differs each time and cannot be registered usefully:
+
+```text
+attempt 1 → http://localhost:37189
+attempt 2 → http://localhost:34027
+attempt 3 → http://localhost:36091
+```
+
+Create the OAuth client with application type **Desktop app**. That type needs no
+registered redirect URI at all, because Google's installed-app flow accepts a
+loopback redirect on any port. If Console shows an editable "Authorized redirect
+URIs" list that you feel obliged to fill in, the client was created as a **Web
+application**, which enforces an exact string match (including port) and can never
+work here — `gws` also exposes no flag or environment variable to pin the port.
+
+When `gws` reports `redirect_uri_mismatch`, this integration's `call login` action
+turns it into an error event that says exactly that and links to the project's
+credentials page (when a project id was supplied).
+
 ### Browser callbacks
 
 The delegated backend binds an **ephemeral** loopback port inside the container
