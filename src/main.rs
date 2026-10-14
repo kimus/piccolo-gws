@@ -21,17 +21,26 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Run interactive setup for the integration.
+    /// Report setup state without changing anything (standalone diagnostic).
+    /// Piccolo drives interactive setup through `state` and `call`.
     Setup {
         /// Integration state directory.
         #[arg(long, default_value = piccolo_gws::DEFAULT_CONFIG_DIR)]
         config_dir: PathBuf,
-        /// PicoClaw config path to patch.
-        #[arg(long, default_value = piccolo_gws::DEFAULT_PICOCLAW_CONFIG)]
-        picoclaw_config: PathBuf,
-        /// Apply without prompting. Intended for tests/automation only.
-        #[arg(long)]
-        yes: bool,
+    },
+    /// Report integration state facts as JSON (consumed by Piccolo's menu).
+    State {
+        /// Integration state directory.
+        #[arg(long, default_value = piccolo_gws::DEFAULT_CONFIG_DIR)]
+        config_dir: PathBuf,
+    },
+    /// Run one declared action: answers on stdin, JSONL events on stdout.
+    Call {
+        /// Action id from `describe` output.
+        action_id: String,
+        /// Integration state directory.
+        #[arg(long, default_value = piccolo_gws::DEFAULT_CONFIG_DIR)]
+        config_dir: PathBuf,
     },
     /// Run live Google Workspace connectivity checks.
     Status {
@@ -76,12 +85,20 @@ fn main() -> Result<()> {
                 println!("{method}");
             }
         }
-        Commands::Setup {
+        Commands::Setup { config_dir } => {
+            piccolo_gws::setup::run_setup(&config_dir)?;
+        }
+        Commands::State { config_dir } => {
+            piccolo_gws::actions::run_state(&config_dir)?;
+        }
+        Commands::Call {
+            action_id,
             config_dir,
-            picoclaw_config,
-            yes,
         } => {
-            piccolo_gws::setup::run_setup(&config_dir, &picoclaw_config, yes)?;
+            let code = piccolo_gws::actions::run_call(&action_id, &config_dir)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
         }
         Commands::Status {
             config_dir,

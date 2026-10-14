@@ -78,8 +78,42 @@ cat > "$work/bundle/share/piccolo/integration/bundle.json" <<JSON
 JSON
 
 PATH="$work/bundle/bin:$PATH" "$work/bundle/bin/piccolo-gws" describe --json | grep -q '"schema": "piccolo.integration.v1"'
+
+# The descriptor must advertise the declarative setup surface Piccolo renders,
+# and must not advertise host ports (browser callbacks ride Piccolo's courier).
+export PATH="$work/bundle/bin:$PATH"
+smoke_descriptor="$("$work/bundle/bin/piccolo-gws" describe --json)"
+printf '%s' "$smoke_descriptor" | grep -q '"actions"' || {
+  echo "release descriptor is missing the actions Piccolo renders" >&2
+  exit 1
+}
+printf '%s' "$smoke_descriptor" | grep -q '"stateKeys"' || {
+  echo "release descriptor is missing stateKeys" >&2
+  exit 1
+}
+printf '%s' "$smoke_descriptor" | grep -q '"ports"' && {
+  echo "release descriptor must not publish host ports for callbacks" >&2
+  exit 1
+}
+
+# `state` must answer with the facts Piccolo gates its menu on.
+"$work/bundle/bin/piccolo-gws" state --config-dir "$work/state" \
+  | grep -q '"piccolo.integration.state.v1"' || {
+  echo "state did not emit a piccolo.integration.state.v1 payload" >&2
+  exit 1
+}
+
+# An unknown action id must be a structured error event, not prose.
 set +e
-status_output="$(PATH="$work/bundle/bin:$PATH" "$work/bundle/bin/piccolo-gws" status --config-dir "$work/state" --json 2>/dev/null)"
+unknown_event="$(printf '{}' | "$work/bundle/bin/piccolo-gws" call __nope__ --config-dir "$work/state" 2>/dev/null)"
+set -e
+printf '%s' "$unknown_event" | grep -q '"type":"error"' || {
+  echo "call did not emit a structured error event for an unknown action" >&2
+  exit 1
+}
+
+set +e
+status_output="$(piccolo-gws status --config-dir "$work/state" --json 2>/dev/null)"
 status_code=$?
 set -e
 if [[ $status_code -eq 0 ]]; then

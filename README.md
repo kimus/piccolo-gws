@@ -5,7 +5,7 @@ Google Workspace integration package for Piccolo/PicoClaw.
 `piccolo-gws` provides:
 
 - a Piccolo integration descriptor via `piccolo-gws describe --json`
-- an interactive setup command that prepares integration state and patches PicoClaw config
+- a declarative setup menu Piccolo renders, with actions that prepare integration state and propose PicoClaw config changes
 - a read-only stdio MCP server exposing curated Gmail, Calendar, and Drive tools
 - a live connectivity status command for Google auth, Gmail, Calendar, and Drive
 
@@ -63,38 +63,80 @@ The bundle includes the lightweight `gws` backend. It does not include the Googl
 ## Commands
 
 - `piccolo-gws describe --json` prints the Piccolo integration descriptor.
-- `piccolo-gws setup --config-dir /root/.piccolo/integrations/gws` prepares state and registers the MCP server in `/root/.picoclaw/config.json`.
-- `piccolo-gws mcp --config-dir /root/.piccolo/integrations/gws --read-only` runs the stdio MCP server.
-- `piccolo-gws status --config-dir /root/.piccolo/integrations/gws --json` checks live Google Workspace connectivity and emits `piccolo.integration.status.v1` JSON for Piccolo.
+- `piccolo-gws state --config-dir <state-dir>` reports the facts Piccolo uses to gate its setup menu, as `piccolo.integration.state.v1` JSON.
+- `piccolo-gws call <action-id> --config-dir <state-dir>` runs one action: answers arrive as JSON on **stdin**, structured events leave as NDJSON on **stdout**, human logs go to **stderr**.
+- `piccolo-gws setup --config-dir <state-dir>` is a standalone, non-interactive report. It never writes `config.json`.
+- `piccolo-gws mcp --config-dir <state-dir> --read-only` runs the stdio MCP server.
+- `piccolo-gws status --config-dir <state-dir> --json` checks live Google Workspace connectivity and emits `piccolo.integration.status.v1` JSON for Piccolo.
 
-## Guided setup
+## Setup
 
-`piccolo-gws setup` runs an interactive wizard (Rust [`inquire`](https://crates.io/crates/inquire)) inside the Piccolo setup container. It first reports the current state, then asks what to do:
+**Piccolo renders the setup UI.** This package declares an action menu in its
+descriptor and executes one action per `call`; it ships no terminal wizard of
+its own, so the experience matches `piccolo init`/`piccolo setup` for every
+integration.
 
-```text
-Set up Google Workspace access     recommended: credentials -> browser login -> config patch
-Import credentials                 paste an existing client_secret.json
-Login / authorize Google account   browser OAuth2 using existing credentials
-Manual instructions                Google Cloud Console steps + exact file locations
-Skip                               leave auth unconfigured for now
+```sh
+piccolo integration setup kimus/piccolo-gws
 ```
 
-Two different things are easy to confuse, so the wizard keeps them separate:
+Actions are dispatched by opaque id, never by meaning:
+
+| id | role | what it does |
+| --- | --- | --- |
+| `set_up_access` | setup | import credentials, then authorize the Google account |
+| `import_credentials` | setup | adopt a `client_secret.json` Piccolo staged from the host |
+| `login` | setup | browser OAuth2 against existing credentials |
+| `check_connectivity` | diagnostic | probe Gmail, Calendar, and Drive through the mapped API methods |
+
+Two different things are easy to confuse, so the menu keeps them separate:
 
 | Concept | What it is | Provided by |
 | --- | --- | --- |
-| OAuth client credentials | identifies the *application* | `client_secret.json` created once in Google Cloud Console, then imported |
-| Google account login | authorizes *your account* and stores refreshable tokens | `gws auth login` (opens a browser) |
+| OAuth client credentials | identifies the *application* | `client_secret.json` created once in Google Cloud Console, then picked in Piccolo's file browser |
+| Google account login | authorizes *your account* and stores refreshable tokens | the delegated backend's browser OAuth2 flow |
 
-Credentials are needed once; login is needed once per account/scope set. The wizard will not run `gws auth login` when credentials are missing — it explains the prerequisite and routes you to import or manual instructions instead. A leftover token without credentials is reported as unusable rather than "configured".
+Credentials are needed once; login is needed once per account/scope set. An
+action whose prerequisite fact is false is refused with
+`prerequisite_unmet` and no side effects, so Piccolo never runs a doomed flow.
+A leftover token without credentials is reported as unusable, not "configured".
 
-Imported credentials are validated as JSON containing a client id and client secret (accepted at the top level or nested under `installed`/`web`) before being written, are never echoed back, and overwriting an existing file requires confirmation.
+### Secrets never touch a terminal or a command line
 
-`piccolo-gws setup --yes` renders no prompts: it reports state, never blocks on auth, and still applies the PicoClaw config patch.
+Answers arrive as one JSON document on stdin. Argv is world-readable through
+`docker top` and environment through `docker inspect`, so neither carries a
+credential. A `path` input is staged by Piccolo into this integration's state
+directory with mode `0600`; the action receives the *container-side* path,
+validates the client id/secret pair (top level, `installed`, or `web`), adopts
+it, and deletes the staged duplicate. Secret values are never echoed into
+events or logs, which the test suite asserts.
 
-The Google Cloud SDK (`gcloud`) is intentionally **not** a dependency of this package. Its closure is about 2 GiB, would be shipped in every release bundle and downloaded on every integration install, and it is only useful for automating a one-time step that Google Cloud Console already covers interactively. Create a *Desktop app* OAuth client once in the console and import it.
+### Configuration is proposed, not written
 
-Browser OAuth caveat: inside a container the consent page may not open automatically. Open the printed URL on the host, and forward the callback port if the redirect lands on `localhost` inside the container.
+This package never modifies `/root/.picoclaw/config.json`. A successful action
+returns the MCP registration as `result.configPatch`, and Piccolo validates it
+against a fixed allowlist (`tools.mcp.servers.google_workspace` only) before
+showing a diff, asking for confirmation, and writing `config.json.bak`. One
+writer means one backup convention and one confirmation gate for a file that
+belongs to the user.
+
+### Browser callbacks
+
+The delegated backend binds an **ephemeral** loopback port inside the container
+and waits for Google's redirect, which a published host port can never carry.
+So the action emits `open_url` plus `wait_redirect`; Piccolo binds that port on
+the host, and relays the browser's redirect back into the container's own
+loopback. No ports are published by this integration.
+
+Over SSH, print the URL and forward the port yourself
+(`ssh -L <port>:localhost:<port> <host>`); Piccolo prints the hint. An upstream
+`gws` device flow would remove this hop entirely — the CLI already links one
+but exposes no flag for it.
+
+The Google Cloud SDK (`gcloud`) is intentionally **not** a dependency of this
+package. Its closure is about 2 GiB, would ship in every release bundle and
+download on every install, and only automates a one-time step that Google Cloud
+Console already covers interactively.
 
 ## MCP tools
 
@@ -110,11 +152,12 @@ The MCP server is read-only by default and exposes:
 ## Source layout
 
 - `src/main.rs` - CLI parsing and command dispatch.
-- `src/descriptor.rs` - Piccolo integration descriptor.
-- `src/setup.rs` - guided interactive setup (state snapshot, credential import, browser login) and PicoClaw config patching.
+- `src/descriptor.rs` - Piccolo integration descriptor, including the action menu.
+- `src/actions.rs` - action menu, state facts, and per-action execution with NDJSON events (credential import, browser authorization, connectivity).
+- `src/setup.rs` - credential detection, `client_secret.json` validation/adoption, and the standalone non-interactive report.
 - `src/mcp.rs` - stdio MCP server and tool handlers.
 - `src/backend.rs` - wrapper around the delegated Google Workspace backend command.
-- `src/config.rs` - JSON config merge/update helpers.
+- `src/config.rs` - state directory bootstrap and the MCP registration patch this integration proposes.
 - `tests/cli.rs` - CLI integration tests.
 - `docs/backend.md` and `docs/safety.md` - design notes.
 
@@ -126,7 +169,7 @@ Workspace content is untrusted input. Email, documents, calendar descriptions, a
 
 ## Piccolo setup containers
 
-Piccolo discovers this package by running `piccolo-gws describe --json` in the gateway image, then runs the described setup command inside a setup container with a TTY. Setup stores Google integration state under `/root/.piccolo/integrations/gws` and merge-patches `/root/.picoclaw/config.json` to register the MCP server. Host workspace state is expected at `<workspace>/integrations/gws` and mounted to `/root/.piccolo/integrations/gws` in setup/runtime containers.
+Piccolo discovers this package by running `piccolo-gws describe --json` in the gateway image, which returns the action menu. Setup then runs `piccolo-gws state` for gating facts and one `piccolo-gws call <action-id>` per user choice, with answers on stdin and events on stdout. Integration state lives under the package-scoped directory (`/root/.piccolo/integrations/<owner>/<repo>` in the container, `<workspace>/integrations/<owner>/<repo>` on the host). Piccolo, not this package, writes `/root/.picoclaw/config.json` after validating the proposed patch and showing a diff.
 
 Piccolo can also run the described status command with `piccolo integration status kimus/piccolo-gws`. The status command performs live read-only checks against Google auth, Gmail, Calendar, and Drive by default, returning actionable remediation when authentication, scopes, APIs, or backend packaging need attention.
 

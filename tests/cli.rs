@@ -33,34 +33,241 @@ fn describe_json_cli_outputs_descriptor() {
 }
 
 #[test]
-fn setup_patches_config_with_yes() {
-    let tmp = test_temp_dir("setup");
+fn setup_reports_state_and_never_writes_runtime_config() {
+    let tmp = test_temp_dir("setup-readonly");
     let state = tmp.join("state");
     let config = tmp.join("config.json");
     std::fs::write(&config, r#"{"unknown":true}"#).unwrap();
+    let before = std::fs::read(&config).unwrap();
+
     let output = piccolo_gws_cmd()
-        .args([
-            "setup",
-            "--config-dir",
-            state.to_str().unwrap(),
-            "--picoclaw-config",
-            config.to_str().unwrap(),
-            "--yes",
-        ])
+        .args(["setup", "--config-dir", state.to_str().unwrap()])
         .output()
         .unwrap();
     assert_success(&output);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Updated"));
-    let patched: Value = serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
-    assert_eq!(patched["unknown"], true);
+    let text = String::from_utf8_lossy(&output.stdout);
+    // The integration proposes the MCP registration instead of writing it.
+    assert!(text.contains("Configuration Piccolo will apply"), "{text}");
+    assert!(text.contains("google_workspace"), "{text}");
     assert_eq!(
-        patched["tools"]["mcp"]["servers"]["google_workspace"]["command"],
+        std::fs::read(&config).unwrap(),
+        before,
+        "config.json must be untouched by the integration"
+    );
+    // And it must not leave a backup file behind either.
+    assert!(
+        !tmp.join("config.json.bak").exists(),
+        "no second backup convention may be created here"
+    );
+    for name in std::fs::read_dir(&tmp).unwrap() {
+        let path = name.unwrap().path();
+        assert!(
+            !path.to_string_lossy().contains(".bak"),
+            "unexpected backup: {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn state_reports_facts_as_json_without_a_flag() {
+    let tmp = test_temp_dir("state");
+    let state = tmp.join("state");
+    let output = piccolo_gws_cmd()
+        .args(["state", "--config-dir", state.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schema"], "piccolo.integration.state.v1");
+    assert_eq!(value["name"], "gws");
+    // Nothing configured yet: every gating fact must read false.
+    assert_eq!(value["facts"]["credentials"], false);
+    assert_eq!(value["facts"]["login"], false);
+}
+
+#[test]
+fn call_unknown_action_emits_error_event() {
+    let tmp = test_temp_dir("call-unknown");
+    let output = piccolo_gws_cmd()
+        .args([
+            "call",
+            "does_not_exist",
+            "--config-dir",
+            tmp.to_str().unwrap(),
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .and_then(|child| child.wait_with_output())
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "unknown action must exit non-zero"
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    let event: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(event["schema"], "piccolo.integration.event.v1");
+    assert_eq!(event["type"], "error");
+    assert_eq!(event["code"], "unknown_action");
+}
+
+#[test]
+fn call_gates_on_unmet_prerequisites_without_side_effects() {
+    let tmp = test_temp_dir("call-gate");
+    let state = tmp.join("state");
+    let config = tmp.join("config.json");
+    std::fs::write(&config, r#"{"unknown":true}"#).unwrap();
+    let before = std::fs::read(&config).unwrap();
+
+    let output = piccolo_gws_cmd()
+        .args([
+            "call",
+            "check_connectivity",
+            "--config-dir",
+            state.to_str().unwrap(),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|child| child.wait_with_output())
+        .unwrap();
+    assert!(!output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    let event: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(event["code"], "prerequisite_unmet");
+    assert!(event["message"].as_str().unwrap().contains("login"));
+    assert_eq!(std::fs::read(&config).unwrap(), before);
+}
+
+#[test]
+fn call_import_credentials_adopts_staged_secret_and_proposes_patch() {
+    let tmp = test_temp_dir("call-import");
+    let state = tmp.join("state");
+    let staged = tmp.join("staged.json");
+    std::fs::write(
+        &staged,
+        r#"{"installed":{"client_id":"abc.apps.googleusercontent.com","client_secret":"shhh"}}"#,
+    )
+    .unwrap();
+
+    let answers = format!(r#"{{"client_secret":"{}"}}"#, staged.display());
+    let mut child = piccolo_gws_cmd()
+        .args([
+            "call",
+            "import_credentials",
+            "--config-dir",
+            state.to_str().unwrap(),
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(answers.as_bytes())
+            .unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
+    assert_success(&output);
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let events: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "step" && e["status"] == "ok"),
+        "{events:?}"
+    );
+    let result = events
+        .iter()
+        .find(|e| e["type"] == "result")
+        .expect("result event");
+    let patch = &result["result"]["configPatch"];
+    assert_eq!(
+        patch["tools"]["mcp"]["servers"]["google_workspace"]["command"],
         "piccolo-gws"
     );
-    assert_eq!(
-        patched["tools"]["mcp"]["servers"]["google_workspace"]["args"][2],
-        state.to_str().unwrap()
+
+    // The secret is adopted into the auth dir and the staged copy is removed.
+    let adopted = state.join("auth").join("client_secret.json");
+    assert!(adopted.is_file());
+    assert!(!staged.exists(), "staged duplicate must not linger");
+    #[cfg(unix)]
+    {
+        let mode = std::fs::metadata(&adopted).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "adopted secret must be owner-only");
+    }
+    // Never echoed back into the protocol stream.
+    assert!(
+        !text.contains("shhh"),
+        "secret material must never appear in events: {text}"
     );
+}
+
+#[test]
+fn call_import_credentials_rejects_garbage() {
+    let tmp = test_temp_dir("call-import-bad");
+    let state = tmp.join("state");
+    let staged = tmp.join("staged.json");
+    std::fs::write(&staged, "not json").unwrap();
+
+    let answers = format!(r#"{{"client_secret":"{}"}}"#, staged.display());
+    let output = piccolo_gws_cmd()
+        .args([
+            "call",
+            "import_credentials",
+            "--config-dir",
+            state.to_str().unwrap(),
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(answers.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .unwrap();
+    assert!(!output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("\"invalid_client_secret\""), "{text}");
+    assert!(!state.join("auth").join("client_secret.json").exists());
+}
+
+#[test]
+fn describe_publishes_actions_and_no_host_ports() {
+    let output = piccolo_gws_cmd()
+        .args(["describe", "--json"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["mcpServerKey"], "google_workspace");
+    assert!(value["setup"].get("ports").is_none());
+    let actions = value["actions"].as_array().unwrap();
+    assert!(!actions.is_empty());
+    let keys = value["stateKeys"].as_array().unwrap();
+    assert!(keys.contains(&Value::String("credentials".into())));
+    for action in actions {
+        let requires = action["requires"].as_array().cloned().unwrap_or_default();
+        for key in requires {
+            assert!(keys.contains(&key), "requires undeclared state key {key}");
+        }
+    }
 }
 
 #[test]
