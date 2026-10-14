@@ -63,8 +63,8 @@ The bundle includes the lightweight `gws` backend. It does not include the Googl
 ## Commands
 
 - `piccolo-gws describe --json` prints the Piccolo integration descriptor.
-- `piccolo-gws state --config-dir <state-dir>` reports the facts Piccolo uses to gate its setup menu, as `piccolo.integration.state.v1` JSON.
-- `piccolo-gws call <action-id> --config-dir <state-dir>` runs one action: answers arrive as JSON on **stdin**, structured events leave as NDJSON on **stdout**, human logs go to **stderr**.
+- `piccolo-gws state --config-dir <state-dir>` reports the facts Piccolo uses to gate its setup menu, plus the current value of each pre-fillable field, as `piccolo.integration.state.v1` JSON. A secret reports only that one is set; its value is never emitted.
+- `piccolo-gws call <action-id> --config-dir <state-dir>` runs one action: answers arrive as JSON on **stdin**, structured events leave as NDJSON on **stdout**, human logs go to **stderr**. An absent answer key keeps a stored value; an empty one clears it.
 - `piccolo-gws setup --config-dir <state-dir>` is a standalone, non-interactive report. It never writes `config.json`.
 - `piccolo-gws mcp --config-dir <state-dir> --read-only` runs the stdio MCP server.
 - `piccolo-gws status --config-dir <state-dir> --json` checks live Google Workspace connectivity and emits `piccolo.integration.status.v1` JSON for Piccolo.
@@ -110,9 +110,36 @@ Answers arrive as one JSON document on stdin. Argv is world-readable through
 `docker top` and environment through `docker inspect`, so neither carries a
 credential. A `path` input is staged by Piccolo into this integration's state
 directory with mode `0600`; the action receives the *container-side* path,
-validates the client id/secret pair (top level, `installed`, or `web`), adopts
-it, and deletes the staged duplicate. Secret values are never echoed into
-events or logs, which the test suite asserts.
+validates it as a usable **Desktop** (`installed`) client pair, adopts it, and
+deletes the staged duplicate. A `web` application client is rejected: it holds a
+complete pair and would still fail at Google with `redirect_uri_mismatch`, so
+"present" is not the same claim as "usable".
+
+### Saving one field at a time
+
+Every declared input is offered whenever its action runs — none is hidden because
+a fact already holds. Hiding the credential fields behind `credentials` made the
+action that sets them unfillable once they were set, and the form submitted
+whatever optional field survived.
+
+An answers document therefore has three meanings, and they are deliberately not
+collapsible into one:
+
+| field in the document | meaning |
+| --- | --- |
+| present, non-empty | set it |
+| present, empty | clear it — how an optional value gets removed |
+| **absent** | keep what is stored — how an unseen secret survives a save |
+
+A save merges onto the stored document and validates the *result*, so a partial
+submit can never put a half-configured client on disk. Changing the client ID
+without supplying its secret is refused: the two are one credential, and
+presence of both proves nothing about them matching. The file is replaced
+atomically at mode `0600`, and `credentials` is derived from whether the stored
+document is usable, never from whether the file exists.
+
+Secret values are never echoed into events, logs, or state output — which the
+test suite asserts, including the state payload.
 
 ### Configuration is proposed, not written
 

@@ -185,11 +185,21 @@ mod tests {
         let inputs = set_credentials["inputs"].as_array().unwrap();
         let kinds: Vec<&str> = inputs.iter().map(|i| i["type"].as_str().unwrap()).collect();
         assert_eq!(kinds, vec!["text", "secret", "text"]);
-        // The two required fields are gated on the fact they satisfy; the
-        // optional project id is not, so it is always offered.
-        assert_eq!(inputs[0]["whenUnmet"], "credentials");
-        assert_eq!(inputs[1]["whenUnmet"], "credentials");
-        assert!(inputs[2].get("whenUnmet").is_none());
+        // The two credential fields are required and always offered. They used to
+        // be gated on the very fact they satisfy, which hid them once a client was
+        // stored and left the form submitting an unrelated optional field.
+        assert_eq!(inputs[0]["required"], Value::Bool(true));
+        assert_eq!(inputs[1]["required"], Value::Bool(true));
+        assert!(
+            inputs[2].get("required").is_none(),
+            "project id stays optional, so clearing it is a real choice"
+        );
+        for input in inputs {
+            assert!(
+                input.get("whenUnmet").is_none(),
+                "no input may be suppressed by state: {input}"
+            );
+        }
         // No action asks the user for a file path.
         for action in actions {
             for input in action["inputs"].as_array().unwrap_or(&vec![]) {
@@ -200,12 +210,55 @@ mod tests {
                 );
             }
         }
-        // Login should not re-ask for scope once the account is authorized.
+        // Scope is asked every time login runs: re-authorizing is how a user picks
+        // a different scope, and a form that showed nothing would silently send the
+        // default they never chose.
         let login = actions
             .iter()
             .find(|a| a["id"] == "login")
             .expect("login action");
-        assert_eq!(login["inputs"][0]["whenUnmet"], "login");
+        assert!(
+            login["inputs"][0].get("whenUnmet").is_none(),
+            "scope must not be suppressed"
+        );
+        assert_eq!(login["inputs"][0]["type"], "select");
+    }
+
+    /// Pre-fill data the host needs to tell "skip" from "clear" — with the secret
+    /// deliberately present-as-a-state and never present-as-a-value.
+    #[test]
+    fn state_reports_field_values_without_exposing_the_secret() {
+        let root =
+            std::env::temp_dir().join(format!("piccolo-gws-state-values-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let config = root.join("state");
+        crate::setup::write_client_credentials(
+            "client-123.apps.googleusercontent.com",
+            "super-secret-value",
+            "my-project",
+            &config,
+        )
+        .unwrap();
+
+        let values = crate::actions::field_values(&config);
+        assert_eq!(
+            values["client_id"]["value"],
+            "client-123.apps.googleusercontent.com"
+        );
+        assert_eq!(values["client_id"]["set"], Value::Bool(true));
+        assert_eq!(values["project_id"]["value"], "my-project");
+        // The secret reports presence and nothing else: no key, no mask, no
+        // truncated hint that a screenshot could carry away.
+        assert_eq!(values["client_secret"]["set"], Value::Bool(true));
+        assert!(
+            values["client_secret"].get("value").is_none(),
+            "a secret must never be handed to the host for display"
+        );
+        assert!(
+            !values.to_string().contains("super-secret-value"),
+            "secret value leaked into state output"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

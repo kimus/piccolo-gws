@@ -40,15 +40,17 @@ pub struct ActionInput {
     #[serde(rename = "type")]
     pub kind: String,
     pub title: String,
+    /// The host blocks advancing past, or submitting with, an empty required
+    /// field. Presence is declared here rather than written into the title, so the
+    /// renderer enforces it and the label stays readable.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destination: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<String>>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub sensitive: bool,
-    /// Skip prompting for this input while this state fact is already true.
-    #[serde(rename = "whenUnmet", skip_serializing_if = "Option::is_none")]
-    pub when_unmet: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,28 +69,34 @@ fn input(key: &str, kind: &str, title: &str) -> ActionInput {
         key: key.into(),
         kind: kind.into(),
         title: title.into(),
+        required: false,
         destination: None,
         options: None,
         sensitive: false,
-        when_unmet: None,
     }
 }
 
 fn credential_inputs() -> Vec<ActionInput> {
-    // Google Cloud Console shows exactly these values for a Desktop OAuth
-    // client. A file download is not required: the delegated backend persists
-    // what it needs from these values alone.
+    // Google Cloud Console shows exactly these values for a Desktop OAuth client.
+    // A file download is not required: the delegated backend persists what it
+    // needs from these values alone.
+    //
+    // Both credential fields are required and neither is ever hidden. They used to
+    // carry `whenUnmet: credentials`, which hid them once a client existed — so
+    // the action that exists to set credentials could no longer ask for them, and
+    // the form submitted whatever optional field happened to survive.
     let mut id = input(
         "client_id",
         "text",
         "OAuth client ID (client type must be \"Desktop app\")",
     );
-    id.when_unmet = Some("credentials".into());
+    id.required = true;
     let mut secret = input("client_secret", "secret", "OAuth client secret");
-    secret.when_unmet = Some("credentials".into());
+    secret.required = true;
     secret.sensitive = true;
-    // Optional: enables a deep link to this project's credentials page when
-    // Google rejects the request (it otherwise tells the user nothing useful).
+    // Optional: enables a deep link to this project's credentials page when Google
+    // rejects the request (it otherwise tells the user nothing useful). Deliberately
+    // not required, because deleting its value is how it gets cleared.
     let project = input(
         "project_id",
         "text",
@@ -124,9 +132,11 @@ fn console_credentials_url(config_dir: &Path) -> String {
 }
 
 fn scope_input() -> ActionInput {
+    // Asked every time, never suppressed: choosing to log in again is how a user
+    // picks a different scope, and a form that quietly asks nothing would send the
+    // login off with a default they never chose.
     let mut base = input("scope", "select", "Requested scope");
     base.options = Some(vec!["readonly".into(), "full".into()]);
-    base.when_unmet = Some("login".into());
     base
 }
 
@@ -158,13 +168,21 @@ pub fn actions() -> Vec<Action> {
 
 fn state_facts(config_dir: &Path) -> Value {
     let auth_dir = config_dir.join("auth");
-    // Facts come from the backend when it is reachable (it knows about env-provided
-    // and keyring credentials we cannot see), but the integration's own state
-    // directory is authoritative when the backend is absent or silent. Without this
-    // fallback `state` would report credentials as missing right after we stored them.
+    // Facts come from the backend when it is reachable (it knows about
+    // env-provided and keyring credentials we cannot see), but the integration's
+    // own state directory is authoritative when the backend is absent or silent.
+    // Without that fallback `state` would report credentials as missing right
+    // after we stored them.
     let backend = backend_auth_state(&auth_dir.clone());
     let snapshot = crate::setup::capture_snapshot(&auth_dir);
-    let credentials = backend.client_configured() || snapshot.credentials.configured();
+    // A document that exists but cannot authorize must read as unconfigured even
+    // though the backend sees a file. Existence used to be the test here, which is
+    // how a stale half-written client made `login` look available.
+    let credentials = if snapshot.problem.is_some() {
+        false
+    } else {
+        backend.client_configured() || snapshot.credentials.configured()
+    };
     let login = backend.authenticated();
     json!({
         "credentials": credentials,
@@ -175,8 +193,41 @@ fn state_facts(config_dir: &Path) -> Value {
     })
 }
 
+/// Current field values, for the host to pre-fill. Absent-and-blank would
+/// otherwise be indistinguishable, and a field the user cannot see cannot be
+/// deliberately cleared.
+///
+/// A secret reports presence and never its value, not even masked: what leaves
+/// this process ends up in a terminal, and a mask sitting in a field can be
+/// half-edited into a wrong secret that still looks present.
+pub(crate) fn field_values(config_dir: &Path) -> Value {
+    let stored = crate::setup::read_stored_client(config_dir);
+    let present = |v: &str| json!({ "value": v, "set": !v.is_empty() });
+    json!({
+        "client_id": present(&stored.client_id),
+        "client_secret": { "set": !stored.client_secret.is_empty() },
+        "project_id": present(&stored.project_id),
+    })
+}
+
+/// Problems worth stating next to the facts, so "credentials: false" is not the
+// only thing a user or a doctor run learns about a file that is there.
+pub(crate) fn state_notes(config_dir: &Path) -> Value {
+    let snapshot = crate::setup::capture_snapshot(&config_dir.join("auth"));
+    match snapshot.problem {
+        Some(problem) => json!({ "problem": problem }),
+        None => json!({}),
+    }
+}
+
 pub fn run_state(config_dir: &Path) -> Result<()> {
-    let out = json!({ "schema": STATE_SCHEMA, "name": "gws", "facts": state_facts(config_dir) });
+    let out = json!({
+        "schema": STATE_SCHEMA,
+        "name": "gws",
+        "facts": state_facts(config_dir),
+        "values": field_values(config_dir),
+        "notes": state_notes(config_dir),
+    });
     println_ok!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
@@ -314,24 +365,22 @@ pub fn run_call(action_id: &str, config_dir: &Path) -> Result<i32> {
     Ok(code)
 }
 
+/// Save the fields that were sent.
+///
+/// Each field is read as present-or-absent rather than defaulted to a string, and
+/// that distinction is the whole contract: an absent secret means "keep the one I
+/// cannot see", an empty one means "clear this". Reading both as "" would let a
+/// save that only carried the client ID wipe a working secret.
 fn set_credentials(answers: &Value, config_dir: &Path) -> i32 {
-    let client_id = answers
-        .get("client_id")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let client_secret = answers
-        .get("client_secret")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if client_id.is_empty() || client_secret.is_empty() {
+    let supplied = |key: &str| answers.get(key).and_then(Value::as_str).map(str::trim);
+    let client_id = supplied("client_id");
+    let client_secret = supplied("client_secret");
+    let project_id = supplied("project_id");
+    if client_id.is_none() && client_secret.is_none() && project_id.is_none() {
         Emitter::step(
             "credentials",
             "fail",
-            "Both the client ID and the client secret are required.",
+            "No credential fields were supplied; nothing was changed.",
         );
         Emitter::error_with_link(
             "missing_input",
@@ -341,20 +390,24 @@ fn set_credentials(answers: &Value, config_dir: &Path) -> i32 {
         );
         return 5;
     }
-    let project_id = answers
-        .get("project_id")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    match crate::setup::write_client_credentials(
-        client_id.as_str(),
-        client_secret.as_str(),
-        &project_id,
-        config_dir,
-    ) {
-        Ok(()) => {
-            // The secret value itself is never echoed.
+    match crate::setup::save_client_credentials(client_id, client_secret, project_id, config_dir) {
+        Ok(save) => {
+            // Field names and outcomes only. No value is ever echoed, and the
+            // client ID is not echoed either: it is identifying rather than
+            // secret, and naming it here buys nothing a user needs to read twice.
+            if save.client_id_replaced {
+                Emitter::step("credentials", "ok", "OAuth client ID replaced.");
+            }
+            if save.client_secret_replaced {
+                Emitter::step("credentials", "ok", "OAuth client secret replaced.");
+            } else if client_secret.is_none() {
+                // Worth saying out loud: the field was blank in the form, and the
+                // stored secret survived anyway.
+                Emitter::step("credentials", "ok", "Kept the stored client secret.");
+            }
+            if save.project_id_cleared {
+                Emitter::step("credentials", "ok", "Project ID cleared.");
+            }
             Emitter::step(
                 "credentials",
                 "ok",
@@ -365,7 +418,12 @@ fn set_credentials(answers: &Value, config_dir: &Path) -> i32 {
         Err(err) => {
             let message = err.to_string();
             Emitter::step("credentials", "fail", &message);
-            Emitter::error("invalid_client_secret", &message, None);
+            Emitter::error_with_link(
+                "credential_save_refused",
+                &message,
+                "Enter the client ID and its secret together to set a client, or change only one of them.",
+                "https://console.cloud.google.com/apis/credentials",
+            );
             6
         }
     }

@@ -219,14 +219,23 @@ fn call_set_credentials_writes_client_secret_from_two_values() {
 }
 
 #[test]
-fn call_set_credentials_rejects_incomplete_values() {
+fn call_set_credentials_refuses_saves_that_would_break_the_pair() {
     let tmp = test_temp_dir("call-set-credentials-bad");
     let state = tmp.join("state");
-    for answers in [
-        "{}",
-        r#"{"client_id":"only-id"}"#,
-        r#"{"client_secret":"only-secret"}"#,
-        r#"{"client_id":"  ","client_secret":"  "}"#,
+    // `missing_input` is nothing at all; the others arrive as real fields but
+    // cannot merge into a usable pair, which is a refusal rather than a gap in
+    // the form. Both leave the state directory untouched.
+    for (answers, code) in [
+        ("{}", "missing_input"),
+        (r#"{"client_id":"only-id"}"#, "credential_save_refused"),
+        (
+            r#"{"client_secret":"only-secret"}"#,
+            "credential_save_refused",
+        ),
+        (
+            r#"{"client_id":"  ","client_secret":"  "}"#,
+            "credential_save_refused",
+        ),
     ] {
         let output = piccolo_gws_cmd()
             .args([
@@ -251,9 +260,77 @@ fn call_set_credentials_rejects_incomplete_values() {
             .unwrap();
         assert!(!output.status.success(), "accepted: {answers}");
         let text = String::from_utf8_lossy(&output.stdout);
-        assert!(text.contains("missing_input"), "{answers}: {text}");
+        assert!(text.contains(code), "{answers}: expected {code} in {text}");
         assert!(!state.join("auth").join("client_secret.json").exists());
     }
+}
+
+/// Absent means keep. This is what lets a host save the client ID without ever
+/// having seen the secret — and why "absent" and "empty" must stay two answers.
+#[test]
+fn call_set_credentials_keeps_an_absent_secret_and_clears_an_empty_optional() {
+    let tmp = test_temp_dir("call-set-credentials-merge");
+    let state = tmp.join("state");
+    let send = |payload: &str| {
+        let output = piccolo_gws_cmd()
+            .args([
+                "call",
+                "set_credentials",
+                "--config-dir",
+                state.to_str().unwrap(),
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child
+                    .stdin
+                    .as_mut()
+                    .unwrap()
+                    .write_all(payload.as_bytes())
+                    .unwrap();
+                child.wait_with_output()
+            })
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+
+    send(r#"{"client_id":"client-a","client_secret":"secret-a","project_id":"proj-a"}"#);
+    let stored = || {
+        std::fs::read_to_string(state.join("auth").join("client_secret.json")).unwrap_or_default()
+    };
+    assert!(stored().contains("secret-a"));
+
+    // Same id, no secret key: kept, and the run says so.
+    let out = send(r#"{"client_id":"client-a"}"#);
+    assert!(out.contains("Kept the stored client secret"), "{out}");
+    assert!(
+        stored().contains("secret-a"),
+        "absent secret must not be cleared"
+    );
+    assert!(
+        stored().contains("proj-a"),
+        "absent project must not be cleared"
+    );
+
+    // Empty project id is a deliberate clear.
+    send(r#"{"project_id":""}"#);
+    assert!(
+        stored().contains("\"project_id\": \"\""),
+        "project id should have been cleared, file holds: {}",
+        stored()
+    );
+    assert!(stored().contains("secret-a"));
+
+    // A new id with no secret is refused: the two are one credential.
+    let out = send(r#"{"client_id":"client-b"}"#);
+    assert!(out.contains("credential_save_refused"), "{out}");
+    assert!(
+        stored().contains("client-a"),
+        "a refused save must not half-apply"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
 }
 
 #[test]
