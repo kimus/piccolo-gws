@@ -141,21 +141,16 @@ fn call_gates_on_unmet_prerequisites_without_side_effects() {
 }
 
 #[test]
-fn call_import_credentials_adopts_staged_secret_and_proposes_patch() {
-    let tmp = test_temp_dir("call-import");
+fn call_set_credentials_writes_client_secret_from_two_values() {
+    let tmp = test_temp_dir("call-set-credentials");
     let state = tmp.join("state");
-    let staged = tmp.join("staged.json");
-    std::fs::write(
-        &staged,
-        r#"{"installed":{"client_id":"abc.apps.googleusercontent.com","client_secret":"shhh"}}"#,
-    )
-    .unwrap();
+    // Exactly the two values Google Cloud Console shows: no file, no paste.
+    let answers = r#"{"client_id":"abc.apps.googleusercontent.com","client_secret":"shhh"}"#;
 
-    let answers = format!(r#"{{"client_secret":"{}"}}"#, staged.display());
     let mut child = piccolo_gws_cmd()
         .args([
             "call",
-            "import_credentials",
+            "set_credentials",
             "--config-dir",
             state.to_str().unwrap(),
         ])
@@ -191,61 +186,74 @@ fn call_import_credentials_adopts_staged_secret_and_proposes_patch() {
         .iter()
         .find(|e| e["type"] == "result")
         .expect("result event");
-    let patch = &result["result"]["configPatch"];
     assert_eq!(
-        patch["tools"]["mcp"]["servers"]["google_workspace"]["command"],
+        result["result"]["configPatch"]["tools"]["mcp"]["servers"]["google_workspace"]["command"],
         "piccolo-gws"
     );
 
-    // The secret is adopted into the auth dir and the staged copy is removed.
     let adopted = state.join("auth").join("client_secret.json");
     assert!(adopted.is_file());
-    assert!(!staged.exists(), "staged duplicate must not linger");
-    #[cfg(unix)]
-    {
-        let mode = std::fs::metadata(&adopted).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "adopted secret must be owner-only");
-    }
-    // Never echoed back into the protocol stream.
     assert!(
         !text.contains("shhh"),
         "secret material must never appear in events: {text}"
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&adopted).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "credential file must be owner-only");
+    }
+    let doc: Value = serde_json::from_slice(&std::fs::read(&adopted).unwrap()).unwrap();
+    assert_eq!(
+        doc["installed"]["client_id"],
+        "abc.apps.googleusercontent.com"
+    );
+
+    // State must now report the fact so the menu unlocks login.
+    let state_out = piccolo_gws_cmd()
+        .args(["state", "--config-dir", state.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let facts: Value = serde_json::from_slice(&state_out.stdout).unwrap();
+    assert_eq!(facts["facts"]["credentials"], true);
 }
 
 #[test]
-fn call_import_credentials_rejects_garbage() {
-    let tmp = test_temp_dir("call-import-bad");
+fn call_set_credentials_rejects_incomplete_values() {
+    let tmp = test_temp_dir("call-set-credentials-bad");
     let state = tmp.join("state");
-    let staged = tmp.join("staged.json");
-    std::fs::write(&staged, "not json").unwrap();
-
-    let answers = format!(r#"{{"client_secret":"{}"}}"#, staged.display());
-    let output = piccolo_gws_cmd()
-        .args([
-            "call",
-            "import_credentials",
-            "--config-dir",
-            state.to_str().unwrap(),
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child
-                .stdin
-                .as_mut()
-                .unwrap()
-                .write_all(answers.as_bytes())
-                .unwrap();
-            child.wait_with_output()
-        })
-        .unwrap();
-    assert!(!output.status.success());
-    let text = String::from_utf8_lossy(&output.stdout);
-    assert!(text.contains("\"invalid_client_secret\""), "{text}");
-    assert!(!state.join("auth").join("client_secret.json").exists());
+    for answers in [
+        "{}",
+        r#"{"client_id":"only-id"}"#,
+        r#"{"client_secret":"only-secret"}"#,
+        r#"{"client_id":"  ","client_secret":"  "}"#,
+    ] {
+        let output = piccolo_gws_cmd()
+            .args([
+                "call",
+                "set_credentials",
+                "--config-dir",
+                state.to_str().unwrap(),
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child
+                    .stdin
+                    .as_mut()
+                    .unwrap()
+                    .write_all(answers.as_bytes())
+                    .unwrap();
+                child.wait_with_output()
+            })
+            .unwrap();
+        assert!(!output.status.success(), "accepted: {answers}");
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains("missing_input"), "{answers}: {text}");
+        assert!(!state.join("auth").join("client_secret.json").exists());
+    }
 }
 
 #[test]

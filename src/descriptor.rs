@@ -177,17 +177,33 @@ mod tests {
             );
             assert!(!action["title"].as_str().unwrap().is_empty(), "{id}");
         }
-        // Path inputs must say where Piccolo stages the file.
-        let import = actions
+        // Credentials are two console values, not a file the user must move.
+        let set_credentials = actions
             .iter()
-            .find(|a| a["id"] == "import_credentials")
-            .expect("import_credentials action");
-        assert_eq!(import["inputs"][0]["type"], "path");
-        assert_eq!(
-            import["inputs"][0]["destination"],
-            "auth/client_secret.json"
-        );
-        assert_eq!(import["inputs"][0]["sensitive"], true);
+            .find(|a| a["id"] == "set_credentials")
+            .expect("set_credentials action");
+        let inputs = set_credentials["inputs"].as_array().unwrap();
+        let kinds: Vec<&str> = inputs.iter().map(|i| i["type"].as_str().unwrap()).collect();
+        assert_eq!(kinds, vec!["text", "secret"]);
+        for input in inputs {
+            assert_eq!(input["whenUnmet"], "credentials");
+        }
+        // No action asks the user for a file path.
+        for action in actions {
+            for input in action["inputs"].as_array().unwrap_or(&vec![]) {
+                assert_ne!(
+                    input["type"],
+                    Value::String("path".into()),
+                    "file import is not the product path"
+                );
+            }
+        }
+        // Login should not re-ask for scope once the account is authorized.
+        let login = actions
+            .iter()
+            .find(|a| a["id"] == "login")
+            .expect("login action");
+        assert_eq!(login["inputs"][0]["whenUnmet"], "login");
     }
 
     #[test]

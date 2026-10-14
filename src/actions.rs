@@ -43,6 +43,9 @@ pub struct ActionInput {
     pub options: Option<Vec<String>>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub sensitive: bool,
+    /// Skip prompting for this input while this state fact is already true.
+    #[serde(rename = "whenUnmet", skip_serializing_if = "Option::is_none")]
+    pub when_unmet: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,42 +67,45 @@ fn input(key: &str, kind: &str, title: &str) -> ActionInput {
         destination: None,
         options: None,
         sensitive: false,
+        when_unmet: None,
     }
 }
 
-fn client_secret_input() -> ActionInput {
-    let mut base = input(
-        "client_secret",
-        "path",
-        "client_secret.json downloaded from Google Cloud Console",
+fn credential_inputs() -> Vec<ActionInput> {
+    // Google Cloud Console shows exactly these two values for a Desktop OAuth
+    // client. Neither a downloaded file nor a pasted blob is required: the
+    // delegated backend accepts them and persists what it needs itself.
+    let mut id = input(
+        "client_id",
+        "text",
+        "OAuth client ID (from Google Cloud Console)",
     );
-    // Piccolo stages the host file here and hands back the container path.
-    base.destination = Some("auth/client_secret.json".into());
-    base.sensitive = true;
-    base
+    id.when_unmet = Some("credentials".into());
+    let mut secret = input(
+        "client_secret",
+        "secret",
+        "OAuth client secret (from Google Cloud Console)",
+    );
+    secret.when_unmet = Some("credentials".into());
+    secret.sensitive = true;
+    vec![id, secret]
 }
 
 fn scope_input() -> ActionInput {
     let mut base = input("scope", "select", "Requested scope");
     base.options = Some(vec!["readonly".into(), "full".into()]);
+    base.when_unmet = Some("login".into());
     base
 }
 
 pub fn actions() -> Vec<Action> {
     vec![
         Action {
-            id: "set_up_access".into(),
+            id: "set_credentials".into(),
             role: "setup".into(),
-            title: "Set up Google Workspace access".into(),
+            title: "Set OAuth client credentials".into(),
             requires: vec![],
-            inputs: vec![client_secret_input()],
-        },
-        Action {
-            id: "import_credentials".into(),
-            role: "setup".into(),
-            title: "Import credentials".into(),
-            requires: vec![],
-            inputs: vec![client_secret_input()],
+            inputs: credential_inputs(),
         },
         Action {
             id: "login".into(),
@@ -119,15 +125,21 @@ pub fn actions() -> Vec<Action> {
 }
 
 fn state_facts(config_dir: &Path) -> Value {
-    let auth_dir = config_dir.join("auth").to_path_buf();
-    let state = backend_auth_state(&auth_dir);
+    let auth_dir = config_dir.join("auth");
+    // Facts come from the backend when it is reachable (it knows about env-provided
+    // and keyring credentials we cannot see), but the integration's own state
+    // directory is authoritative when the backend is absent or silent. Without this
+    // fallback `state` would report credentials as missing right after we stored them.
+    let backend = backend_auth_state(&auth_dir.clone());
+    let snapshot = crate::setup::capture_snapshot(&auth_dir);
+    let credentials = backend.client_configured() || snapshot.credentials.configured();
+    let login = backend.authenticated();
     json!({
-        "credentials": state.client_configured(),
-        "login": state.authenticated(),
-        // Live API reachability is only observable with a token; probing here
-        // would cost a network round trip on every menu render, so it is
-        // reported by the check_connectivity action instead.
-        "apis_enabled": state.authenticated(),
+        "credentials": credentials,
+        "login": login,
+        // Live API reachability is only observable with a token; probing here would
+        // cost a network round trip per menu render, so check_connectivity reports it.
+        "apis_enabled": login,
     })
 }
 
@@ -250,11 +262,7 @@ pub fn run_call(action_id: &str, config_dir: &Path) -> Result<i32> {
     };
 
     let mut code = match action.id.as_str() {
-        "import_credentials" => import_credentials(&answers, config_dir),
-        "set_up_access" => match import_credentials(&answers, config_dir) {
-            0 => authorize(config_dir, &answers),
-            other => other,
-        },
+        "set_credentials" => set_credentials(&answers, config_dir),
         "login" => authorize(config_dir, &answers),
         "check_connectivity" => connectivity(config_dir),
         other => {
@@ -274,34 +282,40 @@ pub fn run_call(action_id: &str, config_dir: &Path) -> Result<i32> {
     Ok(code)
 }
 
-fn import_credentials(answers: &Value, config_dir: &Path) -> i32 {
-    let Some(staged) = answers.get("client_secret").and_then(Value::as_str) else {
-        Emitter::step("credentials", "fail", "No client secret file was selected.");
-        Emitter::error_with_link(
-            "missing_input",
-            "no client_secret path was supplied",
-            "Create a Desktop OAuth client in Google Cloud Console, then rerun and pick the downloaded file.",
-            "https://console.cloud.google.com/apis/credentials",
-        );
-        return 5;
-    };
-    let path = Path::new(staged);
-    if !path.is_file() {
+fn set_credentials(answers: &Value, config_dir: &Path) -> i32 {
+    let client_id = answers
+        .get("client_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let client_secret = answers
+        .get("client_secret")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if client_id.is_empty() || client_secret.is_empty() {
         Emitter::step(
             "credentials",
             "fail",
-            "The staged client secret file is unreadable.",
+            "Both the client ID and the client secret are required.",
         );
-        Emitter::error(
+        Emitter::error_with_link(
             "missing_input",
-            "the staged client secret file does not exist",
-            Some("Piccolo stages the chosen file under this workspace's integration state directory."),
+            "client credentials were not supplied",
+            "Create a Desktop OAuth client in Google Cloud Console and copy its client ID and secret.",
+            "https://console.cloud.google.com/apis/credentials",
         );
         return 5;
     }
-    match crate::setup::store_client_secret(path, config_dir) {
+    match crate::setup::write_client_credentials(
+        client_id.as_str(),
+        client_secret.as_str(),
+        config_dir,
+    ) {
         Ok(()) => {
-            // Never echo the secret value; only the outcome.
+            // The secret value itself is never echoed.
             Emitter::step(
                 "credentials",
                 "ok",

@@ -1,7 +1,7 @@
 use crate::backend::backend_auth_state;
 use crate::config;
 use anyhow::{Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 /// Where OAuth client credentials currently come from.
@@ -100,11 +100,53 @@ pub fn validate_client_secret(raw: &str) -> std::result::Result<(), String> {
     )
 }
 
-/// Adopt a client secret file Piccolo staged from the host.
+/// Write the two values Google Cloud Console shows into the shape the delegated
+/// backend expects, under this integration's own state directory.
 ///
-/// Piccolo owns the mount that makes a host file visible here and copies it with
-/// owner-only permissions; this validates it and moves it into the integration
-/// auth directory. The secret value is never printed.
+/// No user file is involved: the values arrive over stdin and the resulting
+/// document is owned by the integration, mode 0600.
+pub fn write_client_credentials(
+    client_id: &str,
+    client_secret: &str,
+    config_dir: &Path,
+) -> Result<()> {
+    let client_id = client_id.trim();
+    let client_secret = client_secret.trim();
+    if client_id.is_empty() || client_secret.is_empty() {
+        anyhow::bail!("both the OAuth client id and secret are required");
+    }
+    let auth_dir = config_dir.join("auth");
+    std::fs::create_dir_all(&auth_dir)
+        .with_context(|| format!("creating auth directory {}", auth_dir.display()))?;
+    let doc = json!({
+        "installed": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "project_id": "",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "redirect_uris": ["http://localhost"]
+        }
+    });
+    let rendered = serde_json::to_string_pretty(&doc)?;
+    validate_client_secret(&rendered).map_err(anyhow::Error::msg)?;
+    let target = auth_dir.join("client_secret.json");
+    let tmp = auth_dir.join("client_secret.json.tmp");
+    std::fs::write(&tmp, rendered.as_bytes())
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    // Atomic replace: a half-written credential file would break later logins.
+    std::fs::rename(&tmp, &target).with_context(|| format!("replacing {}", target.display()))?;
+    Ok(())
+}
+
+/// Adopt a client secret file staged at an explicit path (service-account style
+/// integrations). Never prints the secret.
 pub fn store_client_secret(staged: &Path, config_dir: &Path) -> Result<()> {
     let raw = std::fs::read_to_string(staged)
         .with_context(|| format!("unreadable client secret file {}", staged.display()))?;
@@ -121,8 +163,6 @@ pub fn store_client_secret(staged: &Path, config_dir: &Path) -> Result<()> {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600));
         }
-        // The staged copy is redundant once adopted; remove it so secrets do
-        // not linger at a second path.
         let _ = std::fs::remove_file(staged);
     }
     Ok(())
