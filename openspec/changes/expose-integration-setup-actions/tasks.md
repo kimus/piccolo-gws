@@ -79,3 +79,11 @@
 - [x] 10.4 Add an optional `project_id` credential input, stored so the Console link can deep-link
 - [x] 10.5 Title the client ID field with the required OAuth client type
 - [x] 10.6 Tests: descriptor field set, project id persistence, no secrets in events
+
+## 11. Write-failure robustness
+
+- [x] 11.1 Add a `println_ok!` macro that ignores stdout write errors
+- [x] 11.2 Route all 15 production `println!` sites through it (describe, state, call events, setup, status, backend-methods)
+- [x] 11.3 Regression test: a closed stdout pipe must not panic or leak an EPIPE message (portable via `std::io::pipe`, since macOS will not open /dev/full)
+- [x] 11.4 Mutation-checked: reverting one site to `println!` makes the test fail with "panicked on a closed stdout"
+- [ ] 11.5 Ships with the next release (not tagged on its own)

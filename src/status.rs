@@ -44,7 +44,7 @@ pub fn run_status(
         anyhow::bail!("only --json output is supported");
     }
     let report = build_status(config_dir, picoclaw_config);
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    println_ok!("{}", serde_json::to_string_pretty(&report)?);
     if report.status == CheckStatus::Fail {
         std::process::exit(1);
     }

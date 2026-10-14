@@ -198,8 +198,8 @@ fn non_empty_env(key: &str) -> bool {
 }
 
 pub fn print_state(snapshot: &AuthSnapshot) {
-    println!("Current Google Workspace state:");
-    println!(
+    println_ok!("Current Google Workspace state:");
+    println_ok!(
         "  gws CLI:           {}",
         if snapshot.gws_available {
             "available"
@@ -207,8 +207,8 @@ pub fn print_state(snapshot: &AuthSnapshot) {
             "not found"
         }
     );
-    println!("  OAuth client:      {}", snapshot.credentials.label());
-    println!(
+    println_ok!("  OAuth client:      {}", snapshot.credentials.label());
+    println_ok!(
         "  Google account:    {}",
         if !snapshot.credentials.configured() && snapshot.account_authorized {
             "token present but unusable without credentials"
@@ -227,8 +227,8 @@ pub fn print_state(snapshot: &AuthSnapshot) {
 /// without an orchestrator. It never writes PicoClaw's `config.json`: the
 /// integration proposes that change and Piccolo applies it.
 pub fn run_setup(config_dir: &Path) -> Result<()> {
-    println!("Google Workspace integration setup");
-    println!("State directory: {}", config_dir.display());
+    println_ok!("Google Workspace integration setup");
+    println_ok!("State directory: {}", config_dir.display());
     config::ensure_state_dir(config_dir)?;
 
     let auth_dir = config_dir.join("auth");
@@ -240,14 +240,16 @@ pub fn run_setup(config_dir: &Path) -> Result<()> {
 
     // Show what Piccolo would be asked to register, without touching it.
     let patch = config::mcp_server_patch(config_dir);
-    println!("\nConfiguration Piccolo will apply on your approval:");
-    println!("{}", serde_json::to_string_pretty(&patch)?);
+    println_ok!("\nConfiguration Piccolo will apply on your approval:");
+    println_ok!("{}", serde_json::to_string_pretty(&patch)?);
 
     if snapshot.access_ready() {
-        println!("\nGoogle Workspace access is configured.");
+        println_ok!("\nGoogle Workspace access is configured.");
     } else {
-        println!("\nRun `piccolo integration setup kimus/piccolo-gws` from an interactive terminal to complete setup.");
-        println!("This command never writes config.json; Piccolo applies the patch shown above.");
+        println_ok!("\nRun `piccolo integration setup kimus/piccolo-gws` from an interactive terminal to complete setup.");
+        println_ok!(
+            "This command never writes config.json; Piccolo applies the patch shown above."
+        );
     }
     Ok(())
 }

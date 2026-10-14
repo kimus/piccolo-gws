@@ -438,3 +438,37 @@ fn test_temp_dir(name: &str) -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
+
+#[test]
+fn write_failure_does_not_panic() {
+    // Rust ignores SIGPIPE, so a plain `println!` panics (exit 101) the moment a
+    // consumer closes the pipe — `describe --json | head -1`, or a pager that
+    // quits. Dropping the read end reproduces that exactly, and portably (no
+    // /dev/full, which macOS refuses to open). The command still succeeded; only
+    // delivery failed, so that must not be reported as a crash.
+    for args in [
+        vec!["describe", "--json"],
+        vec!["backend-methods"],
+        vec!["state", "--config-dir", "/tmp/piccolo-gws-pipe-closed"],
+    ] {
+        let (reader, writer) = std::io::pipe().expect("platform pipe unavailable");
+        drop(reader);
+        let output = piccolo_gws_cmd()
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(writer))
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("panicked"),
+            "`{}` panicked on a closed stdout:\n{stderr}",
+            args.join(" ")
+        );
+        assert!(
+            !stderr.contains("Broken pipe") && !stderr.contains("EPIPE"),
+            "`{}` surfaced a broken-pipe error:\n{stderr}",
+            args.join(" ")
+        );
+    }
+}

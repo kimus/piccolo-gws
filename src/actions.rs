@@ -177,7 +177,7 @@ fn state_facts(config_dir: &Path) -> Value {
 
 pub fn run_state(config_dir: &Path) -> Result<()> {
     let out = json!({ "schema": STATE_SCHEMA, "name": "gws", "facts": state_facts(config_dir) });
-    println!("{}", serde_json::to_string_pretty(&out)?);
+    println_ok!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
 

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use piccolo_gws::println_ok;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -75,14 +76,14 @@ fn main() -> Result<()> {
             if !json {
                 anyhow::bail!("only --json output is supported");
             }
-            println!(
+            println_ok!(
                 "{}",
                 serde_json::to_string_pretty(&piccolo_gws::descriptor::descriptor())?
             );
         }
         Commands::BackendMethods => {
             for method in piccolo_gws::backend::mapped_methods() {
-                println!("{method}");
+                println_ok!("{method}");
             }
         }
         Commands::Setup { config_dir } => {
