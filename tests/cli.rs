@@ -145,8 +145,7 @@ fn call_set_credentials_writes_client_secret_from_two_values() {
     let tmp = test_temp_dir("call-set-credentials");
     let state = tmp.join("state");
     // Exactly the two values Google Cloud Console shows: no file, no paste.
-    let answers =
-        r#"{"client_id":"abc.apps.googleusercontent.com","client_secret":"shhh","project_id":"my-proj-123"}"#;
+    let answers = r#"{"client_id":"abc.apps.googleusercontent.com","client_secret":"shhh","project_id":"my-proj-123"}"#;
 
     let mut child = piccolo_gws_cmd()
         .args([
