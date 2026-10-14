@@ -53,19 +53,36 @@ The system SHALL emit a terminal event on every failure path, including an error
 
 ### Requirement: Invoke actions by id with structured streaming
 
-The system SHALL run one declared action per invocation, reading answers from stdin and writing NDJSON events to stdout, and SHALL end every invocation with a terminal event whether the action succeeded, reported a failure, or died unexpectedly.
+The system SHALL provide `piccolo-gws call <action-id>`, reading collected answers as a single JSON document from stdin and emitting newline-delimited JSON events on stdout while human-readable logs go to stderr, and SHALL end every invocation with a terminal event whether the action succeeded, reported a failure, or died unexpectedly.
+
+#### Scenario: Answers are read from stdin
+- **WHEN** an action is invoked with an answers document on stdin
+- **THEN** the system consumes the answers without accepting any answer value as a command argument or environment variable
+
+#### Scenario: Progress is streamed
+- **WHEN** an action performs multiple steps
+- **THEN** the system emits one event per step with its status and message as the step happens, before the process exits
+
+#### Scenario: Unknown action id
+- **WHEN** `call` is invoked with an id the system does not implement
+- **THEN** the system emits an error event naming the unknown id and exits non-zero
+
+#### Scenario: Required prerequisite is missing
+- **WHEN** an action is invoked while its required state facts are unmet
+- **THEN** the system emits an error event with remediation text and performs no side effects
+
+#### Scenario: Secrets are never echoed
+- **WHEN** an action handles a client secret or authorization credential
+- **THEN** no event, log line, or error message contains the secret value
 
 #### Scenario: Success ends with a result
-
 - **WHEN** an action completes
 - **THEN** a `result` event carries the status and any proposed configuration patch
 
 #### Scenario: Failure ends with an error event
-
 - **WHEN** an action cannot complete
 - **THEN** an `error` event carries a machine code, a human message, and remediation or a link when one is known
 
 #### Scenario: Crash is distinguishable from a report
-
 - **WHEN** the process dies without emitting a terminal event
 - **THEN** the host can tell that outcome apart from a reported failure by the absence of the event

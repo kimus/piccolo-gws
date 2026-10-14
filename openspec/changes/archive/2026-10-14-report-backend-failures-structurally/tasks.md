@@ -25,4 +25,4 @@
 - [x] 4.1 0.3.4 released for both platforms
 - [x] 4.2 Installed into the workspace and promoted through the executability gate
 - [x] 4.3 Live `piccolo integration status --all` against the still-disabled Drive API shows the real message and the clickable enable link
-- [ ] 4.4 Re-run the status after the user enables Drive to confirm the check turns green rather than merely reporting better
+- [x] 4.4 Re-run after the user enabled Drive: `[OK] Drive: connected` and `gws: OK — Google Workspace connectivity checks passed`, so the message change did not mask a still-broken project

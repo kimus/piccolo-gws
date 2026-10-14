@@ -1,34 +1,5 @@
 ## MODIFIED Requirements
 
-### Requirement: Declare setup actions in the descriptor
-
-The system SHALL publish its setup flow as a list of actions in `describe` output, each with a stable opaque id, a role of `setup` or `diagnostic`, a human-readable title, inputs that are always presented once the action is chosen, whether each input is required, and the state facts it requires, while keeping the descriptor schema identifier and the existing `setup.command` field populated for older hosts. Inputs SHALL NOT be conditioned on state facts: an input an action needs in order to do its job must be visible whenever that action is run.
-
-#### Scenario: Actions are declared
-- **WHEN** `piccolo-gws describe` is run
-- **THEN** the output lists actions including credential setup, browser authorization, and connectivity diagnosis
-- **AND** every input type is one of `text`, `secret`, `path`, `select`, `multiselect`, or `confirm`
-
-#### Scenario: Legacy consumers still parse the descriptor
-- **WHEN** a consumer that ignores unknown fields parses the descriptor
-- **THEN** it still finds the existing schema identifier and a usable setup command
-- **AND** the descriptor validates successfully without a schema bump
-
-#### Scenario: Credentials are collected as values, not as a file
-- **WHEN** the credential action is rendered
-- **THEN** it asks for an OAuth client id (text) and an OAuth client secret (sensitive), matching the two values Google Cloud Console displays
-- **AND** no action requires the user to download, locate, or copy a credentials file into the workspace
-
-#### Scenario: Inputs are presented without state conditions
-- **WHEN** credentials are already configured and the credential action is chosen again
-- **THEN** the client id and client secret inputs are still declared, so they can be reviewed and replaced
-- **AND** no input declares a state fact that would hide it
-
-#### Scenario: Requiredness is declared per input
-- **WHEN** the credential action is described
-- **THEN** the client id and client secret inputs are marked required and the project id input is not
-- **AND** requiredness is the only per-input condition expressed
-
 ### Requirement: Report integration state facts
 
 The system SHALL provide `piccolo-gws state` that prints, as JSON on stdout with no required flag, whether OAuth client credentials are usable, whether a Google account is authorized, and whether provider APIs are reachable, SHALL derive these facts from content validity rather than file existence, and SHALL also report the current value of each non-sensitive field so the host can present what is stored.
@@ -54,6 +25,8 @@ The system SHALL provide `piccolo-gws state` that prints, as JSON on stdout with
 - **WHEN** state is printed
 - **THEN** it includes the stored client id and project id so the host can pre-fill those fields
 - **AND** it never includes the client secret, a masked stand-in for it, or any partial rendering of it
+
+
 
 ## ADDED Requirements
 
@@ -105,11 +78,12 @@ The system SHALL treat a credentials document describing a non-Desktop client as
 - **THEN** validity reports the credentials as unusable
 - **AND** the reported reason explains that a Desktop OAuth client is required, rather than allowing an authorization attempt that the provider will reject
 
-### Requirement: Retire conditional input suppression
 
-The system SHALL stop publishing state-conditioned input suppression, so that no consumer can omit a field the credential action depends on.
 
-#### Scenario: Descriptor after retirement
-- **WHEN** the descriptor is published by this version
-- **THEN** no input carries a fact that would hide it
-- **AND** hosts that never implemented suppression and hosts that ignore the field both render the same complete form
+## REMOVED Requirements
+
+### Requirement: Declare setup actions in the descriptor
+
+**Reason**: the published requirement guaranteed a behaviour this version deletes deliberately: an input carrying a `whenUnmet` fact is omitted from the form once that fact holds. Suppressing the field an action exists to set made the action impossible to complete after credentials were stored -- only `project_id` rendered, enter submitted it, and the save answered `missing_input`. Inputs are always declared now; state facts gate which *actions* are selectable, never which fields appear.
+
+**Migration**: `republish-setup-descriptor-without-suppression` re-publishes the same requirement with the suppression scenario replaced by "Inputs are presented without state conditions" and "Requiredness is declared per input". Deleting and adding are separate archived changes because the validator refuses one block that both removes and re-adds a header, and a scenario that quietly vanishes inside a MODIFIED block is exactly the failure the archiver was built to catch.
