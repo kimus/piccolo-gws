@@ -34,9 +34,14 @@ The system SHALL publish its setup flow as a list of actions in `describe` outpu
 - **THEN** it still finds the existing schema identifier and a usable setup command
 - **AND** the descriptor validates successfully without a schema bump
 
-#### Scenario: Path inputs declare a staging destination
-- **WHEN** an action declares a `path` input for an OAuth client secret
-- **THEN** the input names its destination relative to the integration state directory and marks it sensitive
+#### Scenario: Credentials are collected as values, not as a file
+- **WHEN** the credential action is rendered
+- **THEN** it asks for an OAuth client id (text) and an OAuth client secret (sensitive), matching the two values Google Cloud Console displays
+- **AND** no action requires the user to download, locate, or copy a credentials file into the workspace
+
+#### Scenario: Inputs are skipped once their prerequisite holds
+- **WHEN** an input declares a `whenUnmet` fact that the current state reports as satisfied
+- **THEN** the system expects that input to be omitted from the form
 
 ### Requirement: Report integration state facts
 
@@ -83,7 +88,7 @@ The system SHALL provide `piccolo-gws call <action-id>`, reading collected answe
 The system SHALL emit an `open_url` event, with a short label and a URL, for each user step that must happen in Google Cloud Console, constructing project-linked URLs from the installed client configuration when a project id is available.
 
 #### Scenario: Credentials are missing
-- **WHEN** the credential setup step needs a client that does not exist yet
+- **WHEN** the credential action is offered and no client credentials exist
 - **THEN** the system emits an `open_url` event pointing at the Google Cloud Console credentials page, with a one-line label describing what to create
 
 #### Scenario: Project is known

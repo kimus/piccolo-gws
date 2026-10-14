@@ -61,3 +61,12 @@
 - [x] 8.4 Run `nix develop -c cargo fmt --check`, `nix develop -c cargo clippy --all-targets -- -D warnings`, `nix develop -c cargo test`, `nix build .#`
 - [ ] 8.5 Release an integration version and verify through `piccolo integration add` → `setup`
 - [x] 8.6 Update README: Piccolo renders setup, this package declares actions and proposes config, and the wizard/config-writing code is gone
+
+## 9. Option A follow-up
+
+- [x] 9.1 Replace the composite `set_up_access` action with `set_credentials` (one action, one job)
+- [x] 9.2 Collect the client id and client secret as form values instead of asking for a downloaded file
+- [x] 9.3 Write `auth/client_secret.json` (mode 0600) from those values and validate before publishing it
+- [x] 9.4 Add `inputs[].whenUnmet` so satisfied prerequisites stop re-prompting (scope, credentials)
+- [x] 9.5 Report `credentials` from integration state as well as the backend, so facts are correct immediately after storing them
+- [x] 9.6 Update descriptor and CLI tests for the value-based flow, asserting no action uses a `path` input
