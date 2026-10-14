@@ -67,5 +67,18 @@ no value key at all.
 ## Release
 
 - [x] 6.1 version bumped to 0.3.3 (Cargo.toml, flake.nix, Cargo.lock)
-- [ ] 6.2 tag `0.3.3` and let the release workflow publish both platform bundles — deliberately held until the companion Piccolo change is deployed, since 0.3.2's host still suppresses `whenUnmet`-gated inputs and this release no longer sends them (harmless, but the two halves land together)
-- [ ] 6.3 in the Piccolo workspace: `piccolo integration add kimus/piccolo-gws@0.3.3` and confirm the gated promotion adopts the new image and the executability probe passes
+- [x] 6.2 tag `0.3.3` and let the release workflow publish both platform bundles — deliberately held until the companion Piccolo change is deployed, since 0.3.2's host still suppresses `whenUnmet`-gated inputs and this release no longer sends them (harmless, but the two halves land together)
+- [x] 6.3 in the Piccolo workspace: `piccolo integration add kimus/piccolo-gws@0.3.3` and confirm the gated promotion adopts the new image and the executability probe passes
+
+Released as 0.3.3 (both platform bundles published), installed as
+`piccolo/picoclaw-runtime:91d24a98690d`, and promoted through the executing gate.
+Descriptor from inside the running gateway:
+
+```
+set_credentials  requires=-    client_id(text,required) client_secret(secret,required) project_id(text)
+login            requires=credentials   scope(select)
+check_connectivity requires=login       -
+```
+
+No input carries `whenUnmet` anywhere, and `state` now ships `values` with the
+client secret present as a state only.
