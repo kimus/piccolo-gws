@@ -1,5 +1,12 @@
 ## Why
 
+> **Superseded (design direction):** the in-binary guided menu implemented here is replaced by
+> `expose-integration-setup-actions`, where Piccolo renders the menu from descriptor actions and
+> `piccolo-gws` exposes `state`/`call` instead of its own `inquire` wizard. The non-obvious findings
+> below still stand and are reused there: the credentials-vs-login split, status reporting that a
+> token without credentials is unusable, gating login on existing credentials, and never requiring
+> `gcloud`.
+
 Google Workspace setup is currently too raw for a productized integration: users may be told to manually place `client_secret.json`, may hit confusing `gws auth login` failures when no OAuth client exists, and get no guided path from credentials to login. The integration should provide a first-run flow comparable to Piccolo's own setup UX.
 
 ## What Changes
