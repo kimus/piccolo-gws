@@ -108,6 +108,7 @@ pub fn validate_client_secret(raw: &str) -> std::result::Result<(), String> {
 pub fn write_client_credentials(
     client_id: &str,
     client_secret: &str,
+    project_id: &str,
     config_dir: &Path,
 ) -> Result<()> {
     let client_id = client_id.trim();
@@ -122,7 +123,7 @@ pub fn write_client_credentials(
         "installed": {
             "client_id": client_id,
             "client_secret": client_secret,
-            "project_id": "",
+            "project_id": project_id.trim(),
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
             "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",

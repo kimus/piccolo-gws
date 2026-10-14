@@ -70,3 +70,12 @@
 - [x] 9.4 Add `inputs[].whenUnmet` so satisfied prerequisites stop re-prompting (scope, credentials)
 - [x] 9.5 Report `credentials` from integration state as well as the backend, so facts are correct immediately after storing them
 - [x] 9.6 Update descriptor and CLI tests for the value-based flow, asserting no action uses a `path` input
+
+## 10. Login robustness and Google error clarity
+
+- [x] 10.1 Enforce LOGIN_WAIT inside the stderr read loop (a worker thread + recv_timeout): the child only exits once the redirect arrives, so a timeout evaluated after the loop was unreachable
+- [x] 10.2 Make LOGIN_WAIT a backstop (20m) behind Piccolo's shorter per-action budget
+- [x] 10.3 Detect Google's `redirect_uri_mismatch` and emit an error event naming the Desktop-app client requirement
+- [x] 10.4 Add an optional `project_id` credential input, stored so the Console link can deep-link
+- [x] 10.5 Title the client ID field with the required OAuth client type
+- [x] 10.6 Tests: descriptor field set, project id persistence, no secrets in events

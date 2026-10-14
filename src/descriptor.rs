@@ -184,10 +184,12 @@ mod tests {
             .expect("set_credentials action");
         let inputs = set_credentials["inputs"].as_array().unwrap();
         let kinds: Vec<&str> = inputs.iter().map(|i| i["type"].as_str().unwrap()).collect();
-        assert_eq!(kinds, vec!["text", "secret"]);
-        for input in inputs {
-            assert_eq!(input["whenUnmet"], "credentials");
-        }
+        assert_eq!(kinds, vec!["text", "secret", "text"]);
+        // The two required fields are gated on the fact they satisfy; the
+        // optional project id is not, so it is always offered.
+        assert_eq!(inputs[0]["whenUnmet"], "credentials");
+        assert_eq!(inputs[1]["whenUnmet"], "credentials");
+        assert!(inputs[2].get("whenUnmet").is_none());
         // No action asks the user for a file path.
         for action in actions {
             for input in action["inputs"].as_array().unwrap_or(&vec![]) {

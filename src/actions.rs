@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 pub const EVENT_SCHEMA: &str = "piccolo.integration.event.v1";
@@ -24,8 +25,10 @@ pub const STATE_SCHEMA: &str = "piccolo.integration.state.v1";
 /// manage; Piccolo enforces the same path in its own allowlist.
 pub const MCP_SERVER_KEY: &str = "google_workspace";
 
-/// How long to wait for a human to finish a browser authorization.
-const LOGIN_WAIT: Duration = Duration::from_secs(300);
+/// Backstop for a human finishing the browser authorization. Piccolo's own
+/// per-action budget expires slightly earlier so the orchestrator, not the
+/// child process, decides when an attempt is abandoned.
+const LOGIN_WAIT: Duration = Duration::from_secs(20 * 60);
 
 /// State keys actions may `requires` against. Every key must be reported by
 /// [`state_facts`], or Piccolo refuses the descriptor.
@@ -72,30 +75,63 @@ fn input(key: &str, kind: &str, title: &str) -> ActionInput {
 }
 
 fn credential_inputs() -> Vec<ActionInput> {
-    // Google Cloud Console shows exactly these two values for a Desktop OAuth
-    // client. Neither a downloaded file nor a pasted blob is required: the
-    // delegated backend accepts them and persists what it needs itself.
-    let mut id = input(
-        "client_id",
-        "text",
-        "OAuth client ID (from Google Cloud Console)",
-    );
-    id.when_unmet = Some("credentials".into());
-    let mut secret = input(
-        "client_secret",
-        "secret",
-        "OAuth client secret (from Google Cloud Console)",
-    );
-    secret.when_unmet = Some("credentials".into());
-    secret.sensitive = true;
-    vec![id, secret]
+	// Google Cloud Console shows exactly these values for a Desktop OAuth
+	// client. A file download is not required: the delegated backend persists
+	// what it needs from these values alone.
+	let mut id = input(
+		"client_id",
+		"text",
+		"OAuth client ID (client type must be \"Desktop app\")",
+	);
+	id.when_unmet = Some("credentials".into());
+	let mut secret = input(
+		"client_secret",
+		"secret",
+		"OAuth client secret",
+	);
+	secret.when_unmet = Some("credentials".into());
+	secret.sensitive = true;
+	// Optional: enables a deep link to this project's credentials page when
+	// Google rejects the request (it otherwise tells the user nothing useful).
+	let project = input(
+		"project_id",
+		"text",
+		"Google Cloud project ID (optional, used for Console links)",
+	);
+	vec![id, secret, project]
+}
+
+/// Read the stored project id so Console links can be deep-linked.
+fn stored_project_id(config_dir: &Path) -> String {
+	let path = config_dir.join("auth").join("client_secret.json");
+	let Ok(raw) = std::fs::read(&path) else {
+		return String::new();
+	};
+	let Ok(value) = serde_json::from_slice::<Value>(&raw) else {
+		return String::new();
+	};
+	value
+		.get("installed")
+		.and_then(|i| i.get("project_id"))
+		.and_then(Value::as_str)
+		.unwrap_or("")
+		.trim()
+		.to_string()
+}
+
+fn console_credentials_url(config_dir: &Path) -> String {
+	let project = stored_project_id(config_dir);
+	if project.is_empty() {
+		return "https://console.cloud.google.com/apis/credentials".to_string();
+	}
+	format!("https://console.cloud.google.com/apis/credentials?project={project}")
 }
 
 fn scope_input() -> ActionInput {
-    let mut base = input("scope", "select", "Requested scope");
-    base.options = Some(vec!["readonly".into(), "full".into()]);
-    base.when_unmet = Some("login".into());
-    base
+	let mut base = input("scope", "select", "Requested scope");
+	base.options = Some(vec!["readonly".into(), "full".into()]);
+	base.when_unmet = Some("login".into());
+	base
 }
 
 pub fn actions() -> Vec<Action> {
@@ -309,9 +345,16 @@ fn set_credentials(answers: &Value, config_dir: &Path) -> i32 {
         );
         return 5;
     }
+    let project_id = answers
+        .get("project_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     match crate::setup::write_client_credentials(
         client_id.as_str(),
         client_secret.as_str(),
+        &project_id,
         config_dir,
     ) {
         Ok(()) => {
@@ -333,104 +376,157 @@ fn set_credentials(answers: &Value, config_dir: &Path) -> i32 {
 }
 
 fn authorize(config_dir: &Path, answers: &Value) -> i32 {
-    let auth_dir = config_dir.join("auth");
-    let scope_flag = match answers.get("scope").and_then(Value::as_str) {
-        Some("full") => "--full",
-        _ => "--readonly",
-    };
-    Emitter::step("login", "running", "Starting browser authorization…");
-    let mut child = match Command::new(crate::backend::backend_command_name())
-        .arg("auth")
-        .arg("login")
-        .arg(scope_flag)
-        .env("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", &auth_dir)
-        .env("GWS_CONFIG_DIR", &auth_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(err) => {
-            Emitter::error(
-                "backend_unavailable",
-                &format!("cannot start the backend login: {err}"),
-                None,
-            );
-            return 7;
-        }
-    };
+	let auth_dir = config_dir.join("auth");
+	let scope_flag = match answers.get("scope").and_then(Value::as_str) {
+		Some("full") => "--full",
+		_ => "--readonly",
+	};
+	Emitter::step("login", "running", "Starting browser authorization…");
+	let mut child = match Command::new(crate::backend::backend_command_name())
+		.arg("auth")
+		.arg("login")
+		.arg(scope_flag)
+		.env("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", &auth_dir)
+		.env("GWS_CONFIG_DIR", &auth_dir)
+		.stdin(Stdio::null())
+		.stdout(Stdio::null())
+		.stderr(Stdio::piped())
+		.spawn()
+	{
+		Ok(child) => child,
+		Err(err) => {
+			Emitter::error(
+				"backend_unavailable",
+				&format!("cannot start the backend login: {err}"),
+				None,
+			);
+			return 7;
+		}
+	};
 
-    // The backend prints its authorize URL (with an ephemeral loopback
-    // redirect) on stderr and then blocks. Republish it as structured events
-    // so Piccolo can show the link and relay the browser redirect back into
-    // this container's loopback.
-    let mut url_seen = false;
-    if let Some(stderr) = child.stderr.take() {
-        let mut reader = io::BufReader::new(stderr);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-            let text = line.trim_end();
-            if let Some(url) = extract_authorize_url(text) {
-                if !url_seen {
-                    url_seen = true;
-                    Emitter::open_url(
-                        url,
-                        "Authorize this Google account in your browser to finish setup",
-                    );
-                    Emitter::wait_redirect(url);
-                }
-            } else if !text.is_empty() {
-                // Backend chatter stays human-readable and off the protocol.
-                let mut err = io::stderr();
-                let _ = writeln!(err, "{text}");
-            }
-        }
-    }
-    if !url_seen {
-        let _ = child.kill();
-        Emitter::error(
-            "authorize_url_missing",
-            "the backend did not report an authorization URL",
-            Some("Check that OAuth client credentials are valid for this workspace."),
-        );
-        return 8;
-    }
-    match wait_with_timeout(&mut child, LOGIN_WAIT) {
-        Some(status) if status.success() => {
-            Emitter::step(
-                "login",
-                "ok",
-                "Google account authorized; tokens are stored in this workspace.",
-            );
-            0
-        }
-        Some(status) => {
-            Emitter::error(
-                "login_failed",
-                &format!("browser login exited {status}"),
-                Some("Rerun login, or check the Google Cloud OAuth consent configuration."),
-            );
-            9
-        }
-        None => {
-            let _ = child.kill();
-            Emitter::error(
-                "login_timeout",
-                &format!(
-                    "authorization did not complete within {}s",
-                    LOGIN_WAIT.as_secs()
-                ),
-                Some("Complete the browser prompt, then rerun this action."),
-            );
-            10
-        }
-    }
+	// The backend prints its authorize URL (with an ephemeral loopback redirect)
+	// on stderr and then blocks until the browser redirect arrives. Reading it on
+	// a worker thread lets the deadline below apply to the HUMAN step: the child
+	// only exits once the redirect lands, so a timeout evaluated after the read
+	// loop would be unreachable.
+	let stderr = match child.stderr.take() {
+	 Some(stream) => stream,
+		None => {
+			let _ = child.kill();
+			Emitter::error("backend_unavailable", "the backend produced no stderr stream", None);
+			return 7;
+		}
+	};
+	let (tx, rx) = mpsc::channel::<String>();
+	std::thread::spawn(move || {
+		let mut reader = io::BufReader::new(stderr);
+		let mut line = String::new();
+		loop {
+			line.clear();
+			match reader.read_line(&mut line) {
+				Ok(0) | Err(_) => break,
+				Ok(_) => {}
+			}
+			let text = line.trim_end().to_string();
+			if text.is_empty() {
+				continue;
+			}
+			if tx.send(text).is_err() {
+				break;
+			}
+		}
+	});
+
+	let deadline = Instant::now() + LOGIN_WAIT;
+	let mut url_seen = false;
+	let mut saw_redirect_mismatch = false;
+	loop {
+		let remaining = deadline.saturating_duration_since(Instant::now());
+		if remaining.is_zero() {
+			let _ = child.kill();
+			let _ = child.wait();
+			Emitter::error(
+				"login_timeout",
+				&format!(
+					"authorization did not complete within {}s",
+					LOGIN_WAIT.as_secs()
+				),
+				Some("Rerun login and finish the browser prompt promptly; the callback port changes every attempt."),
+			);
+			return 10;
+		}
+		match rx.recv_timeout(remaining) {
+			Ok(text) => {
+				if let Some(url) = extract_authorize_url(&text) {
+					if !url_seen {
+						url_seen = true;
+						Emitter::open_url(
+							url,
+							"Authorize this Google account in your browser to finish setup",
+						);
+						Emitter::wait_redirect(url);
+					}
+				} else {
+					if text.contains("redirect_uri_mismatch") {
+						saw_redirect_mismatch = true;
+					}
+					// Backend chatter stays human-readable and off the protocol.
+					let mut err = io::stderr();
+					let _ = writeln!(err, "{text}");
+				}
+			}
+			// The channel simply had no line yet; the loop re-checks the deadline.
+			Err(RecvTimeoutError::Timeout) => continue,
+			Err(RecvTimeoutError::Disconnected) => break,
+		}
+	}
+
+	if !url_seen {
+		let _ = child.kill();
+		let _ = child.wait();
+		Emitter::error(
+			"authorize_url_missing",
+			"the backend did not report an authorization URL",
+			Some("Check that the OAuth client id and secret are correct."),
+		);
+		return 8;
+	}
+
+	match child.wait() {
+		Ok(status) if status.success() => {
+			Emitter::step(
+				"login",
+				"ok",
+				"Google account authorized; tokens are stored in this workspace.",
+			);
+			0
+		}
+		Ok(_) if saw_redirect_mismatch => {
+			// Google's own page never mentions the deciding factor: client type.
+			Emitter::open_url(
+				&console_credentials_url(config_dir),
+				"Open this OAuth client in Google Cloud Console and check its type is \"Desktop app\"",
+			);
+			Emitter::error(
+				"redirect_uri_mismatch",
+				"Google rejected the redirect URI. This integration signs in with a loopback 				 redirect on a port chosen fresh for every attempt, so the OAuth client type 				 must be 'Desktop app'; a 'Web application' client requires an exact 				 registered URI and can never match.",
+				Some("In Google Cloud Console: Credentials → Create client → Application type: 					  Desktop app, then rerun 'Set OAuth client credentials' with the new id and secret."),
+			);
+			11
+		}
+		Ok(status) => {
+			Emitter::error(
+				"login_failed",
+				&format!("browser login exited {status}"),
+				Some("Rerun login, or check the Google Cloud OAuth consent configuration."),
+			);
+			9
+		}
+		Err(err) => {
+			Emitter::error("login_failed", &format!("could not wait for the backend: {err}"), None);
+			9
+		}
+	}
 }
 
 fn connectivity(config_dir: &Path) -> i32 {
@@ -479,24 +575,6 @@ fn extract_authorize_url(text: &str) -> Option<&str> {
         return Some(trimmed);
     }
     None
-}
-
-fn wait_with_timeout(
-    child: &mut std::process::Child,
-    timeout: Duration,
-) -> Option<std::process::ExitStatus> {
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) => {}
-            Err(_) => return None,
-        }
-        if started.elapsed() >= timeout {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
 }
 
 #[cfg(test)]
