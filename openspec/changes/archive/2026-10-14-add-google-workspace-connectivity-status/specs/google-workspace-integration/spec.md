@@ -11,6 +11,8 @@ The system SHALL provide a `piccolo-gws` executable with a `describe --json` com
 - **WHEN** Piccolo reads the descriptor
 - **THEN** the descriptor setup, MCP, and status command metadata use `/root/.piccolo/integrations/gws` as the default `--config-dir`
 
+## ADDED Requirements
+
 ### Requirement: Provide Google Workspace connectivity status
 The system SHALL provide `piccolo-gws status --json` to test live read-only connectivity to Google Workspace services and emit Piccolo's generic integration status schema.
 

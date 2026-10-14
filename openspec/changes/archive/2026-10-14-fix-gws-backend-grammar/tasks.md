@@ -34,3 +34,4 @@
 - [x] 5.2 Add a packaging-time grammar check using `gws schema <method>` for every mapped method
 - [x] 5.3 Run `nix develop -c cargo fmt --check`, `nix develop -c cargo clippy --all-targets -- -D warnings`, `nix develop -c cargo test`, `nix build .#`
 - [ ] 5.4 Verify live against a real authenticated workspace that Gmail, Calendar, and Drive reads return data
+  BLOCKED: needs a completed Google login (Desktop-app OAuth client), which is the next live session

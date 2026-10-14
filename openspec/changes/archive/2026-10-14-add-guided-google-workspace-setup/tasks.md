@@ -41,3 +41,4 @@
 - [x] 6.2 Run `nix develop -c cargo fmt --check`, `nix develop -c cargo clippy --all-targets -- -D warnings`, `nix develop -c cargo test`, `nix build .#`
 - [x] 6.3 Update `README.md` documenting guided setup, the credentials-vs-login distinction, the deliberate absence of `gcloud`, and the browser OAuth/port-forwarding caveat
 - [ ] 6.4 Exercise interactive setup against a real workspace and confirm: import → browser login → config patch, plus the gated path when credentials are missing
+  SUPERSEDED: this wizard was replaced by Piccolo-rendered actions; the equivalent verification lives in `expose-integration-setup-actions` and Piccolo's setup flow

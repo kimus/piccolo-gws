@@ -37,6 +37,7 @@
 - [x] 5.2 Complete the exchange from the request path and query the host relays into loopback
 - [x] 5.3 Bound the wait with an internal timeout, emit an error event, and close the listener on expiry
 - [ ] 5.4 Make the login path testable without a terminal by relaying a callback from a test
+  NOTE: Piccolo relays the callback for real (verified against a live `gws` loopback); what remains is an automated test for it inside this repo
 
 ## 6. Stop writing runtime config
 
@@ -59,7 +60,7 @@
 - [x] 8.2 Test that no secret material reaches argv, env, events, or logs
 - [x] 8.3 Update `scripts/package-release.sh` smoke checks for `state` and `call` alongside `describe`
 - [x] 8.4 Run `nix develop -c cargo fmt --check`, `nix develop -c cargo clippy --all-targets -- -D warnings`, `nix develop -c cargo test`, `nix build .#`
-- [ ] 8.5 Release an integration version and verify through `piccolo integration add` → `setup`
+- [x] 8.5 Release an integration version and verify through `piccolo integration add` → `setup` (done: 0.3.2 released, `integration add kimus/piccolo-gws@0.3.2` installed it and the gated promotion adopted it)
 - [x] 8.6 Update README: Piccolo renders setup, this package declares actions and proposes config, and the wizard/config-writing code is gone
 
 ## 9. Option A follow-up
@@ -86,4 +87,4 @@
 - [x] 11.2 Route all 15 production `println!` sites through it (describe, state, call events, setup, status, backend-methods)
 - [x] 11.3 Regression test: a closed stdout pipe must not panic or leak an EPIPE message (portable via `std::io::pipe`, since macOS will not open /dev/full)
 - [x] 11.4 Mutation-checked: reverting one site to `println!` makes the test fail with "panicked on a closed stdout"
-- [ ] 11.5 Ships with the next release (not tagged on its own)
+- [x] 11.5 Ships with the next release (not tagged on its own) (shipped in 0.3.2)

@@ -2,21 +2,28 @@
 
 ### Requirement: Run integration setup
 
-The system SHALL provide `piccolo-gws setup` as a non-interactive setup entry point that configures Google Workspace integration state from inside a Piccolo setup container, and SHALL NOT write PicoClaw runtime configuration itself.
+The system SHALL provide `piccolo-gws setup` as a non-interactive diagnostic that reports setup state from inside a Piccolo setup container, and SHALL NOT write PicoClaw runtime configuration itself.
 
 #### Scenario: Setup uses config directory
 - **WHEN** setup is run without an explicit config directory
 - **THEN** Google Workspace integration state is read from and written under `/root/.piccolo/integrations/gws`
 
-#### Scenario: Setup proposes rather than writes runtime config
-- **WHEN** a setup action completes successfully and the MCP server entry is not yet registered
-- **THEN** the action result carries a configuration patch registering `piccolo-gws mcp --config-dir <state-dir> --read-only`
-- **AND** the system does not modify `/root/.picoclaw/config.json`
+#### Scenario: Setup patches PicoClaw config
+- **WHEN** an action completes successfully and the MCP server entry is not yet registered
+- **THEN** the action result carries a proposed configuration patch, and setup performs no patching itself
+- **AND** Piccolo applies the proposal only after showing the diff and receiving confirmation
 
-#### Scenario: Runtime config remains user-owned
+#### Scenario: Setup preserves user-owned config
 - **WHEN** any setup or action path runs
-- **THEN** the system never creates, replaces, or backs up `config.json`
-- **AND** unknown keys and unrelated sections are preserved by construction, because the file is not touched
+- **THEN** `/root/.picoclaw/config.json` is not opened for writing, so unknown keys and unrelated user-owned sections are preserved by construction
+
+#### Scenario: Setup backs up config
+- **WHEN** setup or an action completes
+- **THEN** no backup file is created by the integration, because only Piccolo writes `config.json` and Piccolo owns the backup convention
+
+#### Scenario: Setup is a diagnostic, not a wizard
+- **WHEN** `piccolo-gws setup` runs without a terminal
+- **THEN** it reports state and the remaining required steps without rendering prompts or blocking on input
 
 ## ADDED Requirements
 
@@ -122,3 +129,25 @@ The system SHALL remain runnable without a terminal so actions can be driven fro
 #### Scenario: Host-driven test of the courier
 - **WHEN** a test invokes the login action and relays a callback request without any interactive terminal
 - **THEN** the action completes through the same relayed-callback path a real host would use
+
+## REMOVED Requirements
+
+### Requirement: Present a guided interactive setup menu
+**Reason**: Piccolo owns setup UI. The integration no longer renders a menu; it exposes `state` and `call` and Piccolo renders the menu from the descriptor's declared actions.
+**Migration**: use `piccolo integration setup <owner/repo>`; the actions are `set_credentials`, `login`, and `check_connectivity`.
+
+### Requirement: Complete the guided access flow in prerequisite order
+**Reason**: the composite flow was replaced by three single-purpose actions with a re-rendered menu, and ordering is expressed by each action's `requires` and each input's `whenUnmet` rather than by a scripted sequence inside the binary.
+**Migration**: declare prerequisites in the descriptor; Piccolo gates and re-renders.
+
+### Requirement: Import OAuth client credentials by pasting
+**Reason**: credentials are collected as two text fields (client id and client secret, plus optional project id) by Piccolo's rendered form and passed to the action on stdin. There is no paste block and no file import step.
+**Migration**: `set_credentials` accepts `client_id`, `client_secret`, and optionally `project_id`.
+
+### Requirement: Provide manual instructions and skip
+**Reason**: console guidance is now emitted as structured `open_url` events with labels, so Piccolo renders the link and the user decides; a bespoke "manual instructions" menu entry no longer exists.
+**Migration**: emit `open_url` events for console steps.
+
+### Requirement: Keep non-interactive setup predictable
+**Reason**: `setup` is now a read-only diagnostic, and Piccolo owns every `config.json` write through a fixed allowlist. The old requirement described a non-interactive path that still patched PicoClaw config from inside the integration.
+**Migration**: the non-interactive contract is "describe/state/call", covered by "Keep a usable non-interactive path" in this change.

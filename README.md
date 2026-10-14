@@ -84,16 +84,19 @@ Actions are dispatched by opaque id, never by meaning:
 
 | id | role | what it does |
 | --- | --- | --- |
-| `set_up_access` | setup | import credentials, then authorize the Google account |
-| `import_credentials` | setup | adopt a `client_secret.json` Piccolo staged from the host |
-| `login` | setup | browser OAuth2 against existing credentials |
+| `set_credentials` | setup | store the OAuth client id and secret (plus optional project id) collected as plain fields |
+| `login` | setup | browser OAuth2 against stored credentials |
 | `check_connectivity` | diagnostic | probe Gmail, Calendar, and Drive through the mapped API methods |
+
+There is deliberately no composite "set everything up" action: each id does one
+thing, Piccolo re-renders the menu after it completes, and a satisfied
+prerequisite is simply gone from the next list.
 
 Two different things are easy to confuse, so the menu keeps them separate:
 
 | Concept | What it is | Provided by |
 | --- | --- | --- |
-| OAuth client credentials | identifies the *application* | `client_secret.json` created once in Google Cloud Console, then picked in Piccolo's file browser |
+| OAuth client credentials | identifies the *application* | created once in Google Cloud Console (a **Desktop app** client), then typed into two fields Piccolo renders |
 | Google account login | authorizes *your account* and stores refreshable tokens | the delegated backend's browser OAuth2 flow |
 
 Credentials are needed once; login is needed once per account/scope set. An
@@ -176,7 +179,7 @@ The MCP server is read-only by default and exposes:
 - `src/main.rs` - CLI parsing and command dispatch.
 - `src/descriptor.rs` - Piccolo integration descriptor, including the action menu.
 - `src/actions.rs` - action menu, state facts, and per-action execution with NDJSON events (credential import, browser authorization, connectivity).
-- `src/setup.rs` - credential detection, `client_secret.json` validation/adoption, and the standalone non-interactive report.
+- `src/setup.rs` - credential detection and validation, storage of client credentials received from Piccolo, and the standalone non-interactive report.
 - `src/mcp.rs` - stdio MCP server and tool handlers.
 - `src/backend.rs` - wrapper around the delegated Google Workspace backend command.
 - `src/config.rs` - state directory bootstrap and the MCP registration patch this integration proposes.
