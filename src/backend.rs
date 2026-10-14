@@ -12,11 +12,19 @@ pub struct GwsBackend {
     pub timeout: Duration,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolError {
     pub code: String,
     pub message: String,
     pub login_required: bool,
+    /// Machine-readable reason from the provider (e.g. `accessNotConfigured`).
+    /// Classification uses this instead of searching the human message for words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// A link the provider supplies to fix the problem. Surfacing it beats
+    /// inventing guidance for a condition whose remedy is already known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_url: Option<String>,
 }
 
 impl GwsBackend {
@@ -40,8 +48,15 @@ impl GwsBackend {
         }
         let argv = tool_invocation(name, &args)?;
         let config_dir = self.config_dir.clone();
-        self.run_gws(&argv)
-            .map_err(|err| normalize_backend_error(err, &config_dir))
+        self.run_gws(&argv).map_err(|err| {
+            // A structured failure already carries the provider's own reason; re-
+            // classifying it from prose is how a disabled API became "log in
+            // again". Only untyped errors fall through to the heuristic.
+            if let Some(tool_err) = err.downcast_ref::<ToolError>() {
+                return tool_err.clone();
+            }
+            normalize_backend_error(err, &config_dir)
+        })
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -73,7 +88,13 @@ impl GwsBackend {
         };
         let output = child.wait_with_output()?;
         if !status.success() {
-            anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+            // The failure the user sees must not be the first line of stderr: the
+            // backend prints an informational banner there, and the real cause
+            // (reason, HTTP code, enable link) is structured on stdout.
+            return Err(anyhow::Error::new(parse_backend_failure(
+                &output.stdout,
+                &String::from_utf8_lossy(&output.stderr),
+            )));
         }
         parse_output(&output.stdout)
     }
@@ -141,6 +162,8 @@ pub fn tool_invocation(name: &str, args: &Value) -> std::result::Result<Vec<Stri
                 code: "unknown_tool".into(),
                 message: format!("unknown tool: {name}"),
                 login_required: false,
+                reason: None,
+                enable_url: None,
             })
         }
     };
@@ -275,20 +298,117 @@ pub fn normalize_value(value: Value) -> Value {
     }
 }
 
-pub fn login_required_for(config_dir: &Path) -> ToolError {
+pub fn login_required_for(_config_dir: &Path) -> ToolError {
     ToolError {
         code: "login_required".into(),
-        message: format!(
-            "Google Workspace authentication is incomplete. Run `piccolo-gws setup --config-dir {}` and complete delegated Google login.",
-            config_dir.display()
-        ),
+        // The state dir is deliberately absent: the user's command is the Piccolo
+        // one, and a container-side path they cannot type is noise at best.
+        message: "Google Workspace authentication is incomplete. Run `piccolo integration setup kimus/piccolo-gws` and complete delegated Google login.".into(),
         login_required: true,
+        reason: None,
+        enable_url: None,
     }
+}
+
+/// Pull the structured failure out of a failed backend call.
+///
+/// Falls back to the stderr text only when stdout holds no JSON envelope at all:
+/// prose is a last resort for a field that was never sent, never a substitute for
+/// one that was.
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ToolError {}
+
+pub fn parse_backend_failure(stdout: &[u8], stderr: &str) -> ToolError {
+    let trimmed_stderr = stderr.trim().to_string();
+    let Some(json) = extract_json_object(stdout) else {
+        return ToolError {
+            code: "backend_error".into(),
+            message: if trimmed_stderr.is_empty() {
+                "the backend call failed without output".into()
+            } else {
+                trimmed_stderr
+            },
+            login_required: false,
+            reason: None,
+            enable_url: None,
+        };
+    };
+    let Some(err) = json.get("error") else {
+        return ToolError {
+            code: "backend_error".into(),
+            message: trimmed_stderr,
+            login_required: false,
+            reason: None,
+            enable_url: None,
+        };
+    };
+    let text = |key: &str| err.get(key).and_then(Value::as_str).map(str::to_string);
+    let status_code = err.get("code").and_then(Value::as_i64);
+    let reason = text("reason");
+    let message = text("message").unwrap_or_else(|| trimmed_stderr.clone());
+    // A 401 or an expired grant is the only case where logging in again helps.
+    // Matching prose instead misreports a disabled API as "log in again": Google's
+    // 403 bodies routinely contain "authorization", which contains "auth".
+    let login_required = matches!(status_code, Some(401) | Some(403))
+        && matches!(
+            reason.as_deref(),
+            Some("unauthenticated") | Some("invalid_grant") | Some("permissionDenied")
+        );
+    ToolError {
+        // No guards here: an arm with a guard does not count toward exhaustiveness,
+        // so the compiler stopped warning when a reason slipped through.
+        code: match reason.as_deref() {
+            Some("accessNotConfigured") => "api_not_enabled".into(),
+            Some(other) => other.to_string(),
+            None => format!("http_{}", status_code.unwrap_or(0)),
+        },
+        message,
+        login_required,
+        reason,
+        enable_url: text("enable_url"),
+    }
+}
+
+/// Find the JSON object in a stream that may carry banners around it.
+fn extract_json_object(bytes: &[u8]) -> Option<Value> {
+    let text = String::from_utf8_lossy(bytes);
+    if let Ok(value) = serde_json::from_str::<Value>(text.trim()) {
+        return Some(value);
+    }
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    serde_json::from_str::<Value>(&text[start..=end]).ok()
 }
 
 fn normalize_backend_error(err: anyhow::Error, config_dir: &Path) -> ToolError {
     let message = err.to_string();
     let lower = message.to_ascii_lowercase();
+    if lower.contains("timeout") {
+        return ToolError {
+            code: "backend_timeout".into(),
+            message,
+            login_required: false,
+            reason: None,
+            enable_url: None,
+        };
+    }
+    if lower.contains("backend_unavailable") || lower.contains("no such file") {
+        return ToolError {
+            code: "backend_unavailable".into(),
+            message,
+            login_required: false,
+            reason: None,
+            enable_url: None,
+        };
+    }
     if lower.contains("auth") || lower.contains("login") || lower.contains("credential") {
         login_required_for(config_dir)
     } else if lower.contains("timeout") {
@@ -296,12 +416,16 @@ fn normalize_backend_error(err: anyhow::Error, config_dir: &Path) -> ToolError {
             code: "backend_timeout".into(),
             message,
             login_required: false,
+            reason: None,
+            enable_url: None,
         }
     } else {
         ToolError {
             code: "backend_error".into(),
             message,
             login_required: false,
+            reason: None,
+            enable_url: None,
         }
     }
 }
@@ -419,8 +543,71 @@ mod tests {
         let err = login_required_for(dir);
         assert_eq!(err.code, "login_required");
         assert!(err.login_required);
-        // The message must name the workspace's real state dir, not a stale default.
-        assert!(err.message.contains(dir.to_str().unwrap()));
+        // The actionable command is Piccolo's. A container-side path cannot be
+        // typed by the user, so it must not appear in their instructions at all —
+        // strictly stronger than the old "name the real dir, not the default".
+        assert!(err.message.contains("piccolo integration setup"));
+        assert!(
+            !err.message.contains("/root/.piccolo/"),
+            "a path the user cannot type is not guidance: {}",
+            err.message
+        );
         assert!(!err.message.contains(crate::DEFAULT_CONFIG_DIR));
+    }
+
+    /// The real fixture from a live failure: the backend put an informational
+    /// banner on stderr and the actual cause on stdout. Reporting the banner is
+    /// what made a disabled API look like a broken integration.
+    #[test]
+    fn parses_structured_api_failure_over_the_stderr_banner() {
+        let stdout = br#"{
+  "error": {
+    "code": 403,
+    "enable_url": "https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=192902532576",
+    "message": "Google Drive API has not been used in project 192902532576 before or it is disabled.",
+    "reason": "accessNotConfigured"
+  }
+}"#;
+        let stderr = "Using keyring backend: keyring\n\nerror[api]: hint: API not enabled for your GCP project.";
+        let err = parse_backend_failure(stdout, stderr);
+        assert_eq!(err.code, "api_not_enabled");
+        assert_eq!(err.reason.as_deref(), Some("accessNotConfigured"));
+        assert!(err.message.contains("has not been used"), "{}", err.message);
+        assert!(
+            !err.message.contains("keyring"),
+            "the banner must not become the message: {}",
+            err.message
+        );
+        assert!(err.enable_url.unwrap().contains("drive.googleapis.com"));
+        // The classification that matters: a disabled API is not a login problem.
+        assert!(!err.login_required);
+    }
+
+    #[test]
+    fn unauthenticated_is_the_one_case_where_login_is_the_answer() {
+        let stdout =
+            br#"{"error":{"code":401,"message":"Invalid Credentials","reason":"unauthenticated"}}"#;
+        let err = parse_backend_failure(stdout, "");
+        assert!(err.login_required, "a 401 must ask for login");
+        assert_eq!(err.code, "unauthenticated");
+    }
+
+    #[test]
+    fn falls_back_to_stderr_only_when_no_envelope_exists() {
+        let err = parse_backend_failure(b"", "boom: something exploded");
+        assert_eq!(err.code, "backend_error");
+        assert_eq!(err.message, "boom: something exploded");
+        assert!(!err.login_required);
+        // No prose substring hunting: a message that merely contains "auth" must
+        // not be reinterpreted as a login problem.
+        let tricky = parse_backend_failure(b"", "insufficient authorization for the call");
+        assert!(!tricky.login_required, "matching prose is not a signal");
+    }
+
+    #[test]
+    fn finds_json_when_banners_share_the_stream() {
+        let stdout = b"Using keyring backend: keyring\n{\"error\":{\"code\":403,\"reason\":\"accessNotConfigured\"}}\n";
+        let err = parse_backend_failure(stdout, "");
+        assert_eq!(err.code, "api_not_enabled");
     }
 }

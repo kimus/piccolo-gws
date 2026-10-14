@@ -18,7 +18,7 @@
       in {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "piccolo-gws";
-          version = "0.3.3";
+          version = "0.3.4";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           nativeBuildInputs = [ pkgs.makeWrapper ];

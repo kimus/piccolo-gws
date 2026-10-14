@@ -602,33 +602,62 @@ fn connectivity(config_dir: &Path) -> i32 {
         ),
         ("drive", "drive_search", json!({"query": "", "limit": 1})),
     ];
-    let mut failed = false;
+    let mut failures: Vec<(String, String, Option<String>)> = vec![];
+    // Counted before the loop: `probes` is consumed by iterating it.
+    let total = probes.len();
     for (id, tool, args) in probes {
         let result = backend.call_tool(tool, args);
         if result.get("ok").and_then(Value::as_bool) == Some(true) {
             Emitter::step(id, "ok", "reachable");
-        } else {
-            failed = true;
-            let message = result
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or("call failed")
-                .to_string();
-            Emitter::step(id, "fail", &message);
+            continue;
         }
+        let err = result.get("error").cloned().unwrap_or(Value::Null);
+        let message = err
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("call failed")
+            .to_string();
+        let enable_url = err
+            .get("enable_url")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        Emitter::step(id, "fail", &message);
+        failures.push((id.to_string(), message, enable_url));
     }
-    if failed {
-        Emitter::error(
+    if failures.is_empty() {
+        return 0;
+    }
+    let names: Vec<&str> = failures.iter().map(|(id, _, _)| id.as_str()).collect();
+    let reachable = total - failures.len();
+    let summary = format!(
+        "{} of {} services unreachable: {}",
+        failures.len(),
+        total,
+        names.join(", ")
+    );
+    // The provider already told us how to fix an unenabled API. Passing that
+    // through beats the generic guess this used to emit.
+    if let Some((_, _, Some(url))) = failures.first() {
+        Emitter::error_with_link(
             "connectivity_failed",
-            "one or more Google Workspace APIs are unreachable",
-            Some(
-                "Rerun login with a wider scope, or confirm the APIs are enabled for the project.",
+            &summary,
+            &format!(
+                "Enable the service in your Google Cloud project, then wait a few minutes for it to propagate and rerun this check."
             ),
+            url,
         );
         return 11;
     }
-    0
+    Emitter::error(
+        "connectivity_failed",
+        &summary,
+        Some(if reachable == 0 {
+            "Rerun login with a wider scope, or confirm the project's APIs are enabled."
+        } else {
+            "Rerun login with a wider scope, or confirm the project's APIs are enabled."
+        }),
+    );
+    11
 }
 
 fn extract_authorize_url(text: &str) -> Option<&str> {

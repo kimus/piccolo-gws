@@ -96,7 +96,23 @@ fn main() -> Result<()> {
             action_id,
             config_dir,
         } => {
-            let code = piccolo_gws::actions::run_call(&action_id, &config_dir)?;
+            // An Err reaching here would exit with an anyhow message on stderr and
+            // no protocol event, which Piccolo can only read as a crash. The
+            // contract is "always end the stream", so say so in the stream.
+            let code = match piccolo_gws::actions::run_call(&action_id, &config_dir) {
+                Ok(code) => code,
+                Err(err) => {
+                    let payload = serde_json::json!({
+                        "schema": piccolo_gws::actions::EVENT_SCHEMA,
+                        "type": "error",
+                        "code": "internal",
+                        "message": err.to_string(),
+                        "remediation": "Rerun the action; if it repeats, report this message.",
+                    });
+                    println!("{}", serde_json::to_string(&payload).unwrap_or_default());
+                    1
+                }
+            };
             if code != 0 {
                 std::process::exit(code);
             }

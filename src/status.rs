@@ -23,6 +23,13 @@ pub struct StatusCheck {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remediation: Option<String>,
+    /// A link the provider itself supplied. Piccolo's status schema already
+    /// carries these fields, so a disabled API can be shown as one click rather
+    /// than a sentence the user has to go hunting for.
+    #[serde(rename = "remediationLabel", skip_serializing_if = "Option::is_none")]
+    pub remediation_label: Option<String>,
+    #[serde(rename = "remediationUrl", skip_serializing_if = "Option::is_none")]
+    pub remediation_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -147,13 +154,25 @@ fn probe_check(
             .pointer("/error/message")
             .and_then(Value::as_str)
             .unwrap_or("connectivity check failed");
-        let remediation = remediation_for(message);
+        // The provider already said how to fix it; its link beats our guess.
+        let enable_url = value
+            .pointer("/error/enable_url")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let remediation = match &enable_url {
+            Some(_) => "Enable the service in your Google Cloud project, then wait a few minutes and rerun this check.".to_string(),
+            None => remediation_for(message),
+        };
         StatusCheck {
             id,
             label,
             status: CheckStatus::Fail,
             message: message.to_string(),
             remediation: Some(remediation),
+            remediation_label: enable_url
+                .as_ref()
+                .map(|_| "Open the API in Google Cloud Console".to_string()),
+            remediation_url: enable_url,
         }
     }
 }
@@ -172,6 +191,8 @@ fn state_dir_check(config_dir: &Path) -> StatusCheck {
             status: CheckStatus::Warn,
             message: format!("{} does not exist yet", config_dir.display()),
             remediation: Some("Run `piccolo integration setup kimus/piccolo-gws`.".to_string()),
+            remediation_label: None,
+            remediation_url: None,
         }
     }
 }
@@ -247,6 +268,8 @@ fn ok(id: &'static str, label: &'static str, message: &str) -> StatusCheck {
         status: CheckStatus::Ok,
         message: message.to_string(),
         remediation: None,
+        remediation_label: None,
+        remediation_url: None,
     }
 }
 
@@ -257,6 +280,8 @@ fn fail(id: &'static str, label: &'static str, message: &str, remediation: &str)
         status: CheckStatus::Fail,
         message: message.to_string(),
         remediation: Some(remediation.to_string()),
+        remediation_label: None,
+        remediation_url: None,
     }
 }
 
@@ -269,6 +294,8 @@ fn skip_auth(id: &'static str, label: &'static str) -> StatusCheck {
         remediation: Some(
             "Run `piccolo integration setup kimus/piccolo-gws` and complete delegated Google login.".to_string(),
         ),
+        remediation_label: None,
+        remediation_url: None,
     }
 }
 
@@ -300,7 +327,9 @@ mod tests {
                 label: "X",
                 status: CheckStatus::Warn,
                 message: "w".into(),
-                remediation: None
+                remediation: None,
+                remediation_label: None,
+                remediation_url: None,
             }]),
             CheckStatus::Warn
         );
