@@ -1,10 +1,17 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 use wait_timeout::ChildExt;
+
+/// Grace period to finish reading a pipe once the child is gone. A backend that
+/// hands its output to a long-lived grandchild keeps the write end open, and an
+/// unbounded read there would only trade one hang for another.
+const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct GwsBackend {
@@ -74,10 +81,25 @@ impl GwsBackend {
                 self.config_dir.join("auth"),
             )
             .env("GWS_CONFIG_DIR", self.config_dir.join("auth"))
+            // This process is an MCP server whose stdin carries JSON-RPC
+            // framing. A backend that inherits it can read requests — or
+            // leftovers of requests — that were addressed to us.
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .context("running gws backend")?;
+
+        // A `gmail_read` reply is one JSON document as big as the message: mail
+        // with an inline image runs past the ~64 KiB OS pipe buffer. Reading only
+        // after the child exits therefore deadlocks — the backend blocks writing,
+        // the wait runs out its timeout, and a call that answers in 250 ms when
+        // its output goes to a file reports "backend_timeout". Draining both
+        // streams on worker threads gives the child somewhere to write, and the
+        // timeout still bounds how long this call waits for it.
+        let stdout = drain_pipe(child.stdout.take());
+        let stderr = drain_pipe(child.stderr.take());
+
         let status = match child.wait_timeout(self.timeout)? {
             Some(status) => status,
             None => {
@@ -86,7 +108,11 @@ impl GwsBackend {
                 anyhow::bail!("backend_timeout");
             }
         };
-        let output = child.wait_with_output()?;
+        let output = std::process::Output {
+            status,
+            stdout: collect_drained(&stdout, "stdout")?,
+            stderr: collect_drained(&stderr, "stderr")?,
+        };
         if !status.success() {
             // The failure the user sees must not be the first line of stderr: the
             // backend prints an informational banner there, and the real cause
@@ -98,6 +124,26 @@ impl GwsBackend {
         }
         parse_output(&output.stdout)
     }
+}
+
+/// Read a child stream to EOF off the waiting thread and hand the bytes back
+/// over a channel. Draining concurrently is what keeps a large response from
+/// filling the pipe buffer and stalling the child that produced it.
+fn drain_pipe<R: Read + Send + 'static>(stream: Option<R>) -> Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut stream) = stream {
+            let _ = stream.read_to_end(&mut buf);
+        }
+        let _ = tx.send(buf);
+    });
+    rx
+}
+
+fn collect_drained(rx: &Receiver<Vec<u8>>, stream: &str) -> Result<Vec<u8>> {
+    rx.recv_timeout(PIPE_DRAIN_GRACE)
+        .with_context(|| format!("backend {stream} never closed after the process exited"))
 }
 
 fn arg_string(args: &Value, key: &str) -> String {
@@ -217,6 +263,7 @@ pub fn backend_auth_state(auth_dir: &PathBuf) -> BackendAuthState {
         .arg("status")
         .env("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", auth_dir)
         .env("GWS_CONFIG_DIR", auth_dir)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .output();

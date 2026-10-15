@@ -523,6 +523,71 @@ fn mcp_initialize_still_accepts_content_length_framed_request() {
     assert_newline_delimited_reply(&stdout);
 }
 
+#[test]
+#[cfg(unix)]
+fn mcp_tool_call_survives_a_response_larger_than_the_pipe_buffer() {
+    // A Gmail message read is one JSON document bigger than the ~64 KiB OS pipe
+    // buffer. Draining the backend's stdout only after it exits deadlocks: gws
+    // blocks writing, the wait hits its 20 s timeout, and PicoClaw reports
+    // `backend_timeout` for a call that answers in 250 ms when its output goes to
+    // a file. The payload here is 200 KiB of real JSON, so any regression in the
+    // read/write overlap fails this test instead of a user's inbox.
+    let tmp = test_temp_dir("big-response");
+    let fake = tmp.join("gws-fake");
+    std::fs::write(
+        &fake,
+        r#"#!/bin/sh
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  printf '{"auth_method":"tokens","credential_source":"encrypted_file","client_config_exists":true,"token_cache_exists":true}\n'
+  exit 0
+fi
+printf '{"id":"1","snippet":"'
+# ~200 KiB of filler on one line, larger than any platform pipe buffer.
+head -c 200000 /dev/zero | tr '\0' 'x'
+printf '"}\n'
+exit 0
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fake, perms).unwrap();
+
+    let request = br#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"gmail_read","arguments":{"id":"1"}}}
+"#;
+    let output = piccolo_gws_cmd()
+        .env("PICCOLO_GWS_BACKEND_BIN", &fake)
+        .args(["mcp", "--config-dir", tmp.to_str().unwrap(), "--read-only"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.as_mut().unwrap().write_all(request)?;
+            child.stdin.as_mut().unwrap().flush()?;
+            drop(child.stdin.take());
+            child.wait_with_output()
+        })
+        .unwrap();
+    assert_success(&output);
+
+    let reply: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("one JSON reply line");
+    let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        !text.contains("backend_timeout"),
+        "a large backend response must not be reported as a timeout: {text}"
+    );
+    assert_eq!(reply["result"]["isError"], false);
+    let payload: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(payload["ok"], true);
+    assert!(
+        payload["data"]["snippet"].as_str().unwrap().len() > 64 * 1024,
+        "the full response must reach the caller, not a truncated pipe read"
+    );
+}
+
 fn piccolo_gws_cmd() -> Command {
     Command::new(env!("CARGO_BIN_EXE_piccolo-gws"))
 }
