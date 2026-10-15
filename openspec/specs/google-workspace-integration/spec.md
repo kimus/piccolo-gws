@@ -52,11 +52,20 @@ The system SHALL provide `piccolo-gws setup` as a non-interactive diagnostic tha
 - **THEN** it reports state and the remaining required steps without rendering prompts or blocking on input
 
 ### Requirement: Provide stdio MCP server
-The system SHALL provide `piccolo-gws mcp` as a stdio MCP server for PicoClaw.
+The system SHALL provide `piccolo-gws mcp` as a stdio MCP server for PicoClaw, speaking the MCP stdio transport: one JSON-RPC message per line, with no framing headers on output.
 
 #### Scenario: MCP server starts
 - **WHEN** PicoClaw runs `piccolo-gws mcp --config-dir /root/.piccolo/integrations/gws --read-only`
 - **THEN** the process speaks MCP over stdio and exposes Google Workspace tools
+
+#### Scenario: Replies are newline-delimited JSON
+- **WHEN** the server writes any JSON-RPC response or notification
+- **THEN** the message occupies one line and the reply carries no `Content-Length:` header
+- **AND** the client PicoClaw uses (the MCP Go SDK, which reads line by line) can parse it
+
+#### Scenario: Framed requests are still accepted
+- **WHEN** a client sends a request prefixed with `Content-Length:` headers
+- **THEN** the server reads it, but its reply is still a single JSON line
 
 #### Scenario: Auth is missing
 - **WHEN** the MCP server is invoked before Google auth is complete

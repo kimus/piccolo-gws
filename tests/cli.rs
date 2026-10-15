@@ -468,8 +468,13 @@ fn status_requires_json() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("only --json output is supported"));
 }
 
-#[test]
-fn mcp_initialize_over_stdio_starts() {
+// MCP over stdio is newline-delimited JSON: one message per line, no framing headers.
+// PicoClaw's client is the official MCP Go SDK, which reads stdout line by line and has
+// no Content-Length support, so an LSP-framed reply fails the handshake with
+// `invalid character 'C' looking for beginning of value` and Piccolo then loses every
+// Google Workspace tool. These tests pin the reply shape for both input framings
+// `read_message` accepts.
+fn mcp_stdio_reply(request: &[u8]) -> String {
     let output = piccolo_gws_cmd()
         .args(["mcp", "--config-dir", "/tmp/piccolo-gws-test"])
         .stdin(std::process::Stdio::piped())
@@ -477,16 +482,45 @@ fn mcp_initialize_over_stdio_starts() {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child.stdin.as_mut().unwrap().write_all(
-                b"Content-Length: 46\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}",
-            )?;
+            child.stdin.as_mut().unwrap().write_all(request)?;
             child.wait_with_output()
         })
         .unwrap();
     assert_success(&output);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Content-Length:"));
-    assert!(stdout.contains("piccolo-gws"));
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+fn assert_newline_delimited_reply(stdout: &str) {
+    assert!(
+        !stdout.contains("Content-Length"),
+        "MCP stdio replies must never be LSP-framed: {stdout}"
+    );
+    assert!(
+        stdout.contains("piccolo-gws"),
+        "reply should identify the server: {stdout}"
+    );
+    let line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with('{'))
+        .unwrap_or_else(|| panic!("no JSON reply line in: {stdout}"));
+    let value: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|err| {
+        panic!("a reply line must be exactly one JSON value ({err}): {line}")
+    });
+    assert_eq!(value["result"]["serverInfo"]["name"], "piccolo-gws");
+}
+
+#[test]
+fn mcp_initialize_over_stdio_replies_with_one_json_line() {
+    let stdout = mcp_stdio_reply(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n");
+    assert_newline_delimited_reply(&stdout);
+}
+
+#[test]
+fn mcp_initialize_still_accepts_content_length_framed_request() {
+    let stdout = mcp_stdio_reply(
+        b"Content-Length: 46\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}",
+    );
+    assert_newline_delimited_reply(&stdout);
 }
 
 fn piccolo_gws_cmd() -> Command {

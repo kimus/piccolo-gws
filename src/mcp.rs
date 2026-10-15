@@ -143,8 +143,15 @@ fn read_message<R: BufRead>(reader: &mut R) -> Result<Option<String>> {
 }
 
 fn write_message<W: Write>(writer: &mut W, value: &Value) -> Result<()> {
+    // MCP over stdio is newline-delimited JSON: exactly one message per line and no
+    // framing headers. PicoClaw's client is the official MCP Go SDK
+    // (github.com/modelcontextprotocol/go-sdk, mcp/transport.go), which reads stdout
+    // line by line and has no Content-Length handling, so a framed reply fails the
+    // handshake with `invalid character 'C' looking for beginning of value` and
+    // PicoClaw then fails the entire chat turn. `read_message` above tolerates
+    // LSP-style headers on the way in; the way out is the spec's, always.
     let body = serde_json::to_string(value)?;
-    write!(writer, "Content-Length: {}\r\n\r\n{}", body.len(), body)?;
+    writeln!(writer, "{}", body)?;
     writer.flush()?;
     Ok(())
 }
