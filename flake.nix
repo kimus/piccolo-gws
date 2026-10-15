@@ -18,7 +18,11 @@
       in {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "piccolo-gws";
-          version = "0.3.4";
+          # Read from Cargo.toml rather than repeating it here. A hardcoded copy
+          # silently drifted to 0.3.4 while the crate said 0.3.5, so the store path
+          # and the binary's own CARGO_PKG_VERSION (which the MCP serverInfo reports,
+          # and which Piccolo's handshake probe prints back to the user) disagreed.
+          version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           nativeBuildInputs = [ pkgs.makeWrapper ];
