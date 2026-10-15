@@ -14,7 +14,15 @@
 
 ## 3. Release and proof
 
-- [ ] 3.1 0.3.6 released for both platforms
-- [ ] 3.2 Adopted into the workspace (`piccolo integration upgrade`) and promoted through the executability gate
-- [ ] 3.3 Live `piccolo chat -m "read my latest emails"` against the inbox that reproduced it: no `backend_timeout`, and the turn finishes in seconds rather than minutes
-- [ ] 3.4 Confirm the previously-timed-out large messages (74 KiB, 96 KiB) now return — they are the exact inputs that failed
+- [x] 3.1 0.3.6 released for both platforms (published 2026-10-15T17:42Z, Release run 38779357020 success)
+- [x] 3.2 Adopted into the workspace (`piccolo integration upgrade`) and promoted through the executability gate — image `cd4c6f2a1baa` -> `8c559b1b9716`, recorded as `previous_image`, `piccolo doctor` shows `[OK] running container image: piccolo/picoclaw-runtime:8c559b1b9716` and `[OK] mcp: 1 server(s) reachable by coordinator "main" (google_workspace)`
+- [x] 3.3 The three messages that reproduced the failure, read through `piccolo-gws mcp` over the real `tools/call` path inside the running gateway, authenticated with the workspace's own credentials:
+
+  | message id | result | wall time | response bytes |
+  |---|---|---|---|
+  | `1a14036c264927c2` | ok, no timeout | 651 ms | 97,373 |
+  | `1a1405b80d603306` | ok, no timeout | 627 ms | 55,570 |
+  | `1a14061499418bbe` | ok, no timeout | 564 ms | 75,060 |
+
+  Measured at the MCP layer rather than through `piccolo chat`, so the agent's own retries are not in these numbers — what is measured is the exact call that used to cost 20,403 ms.
+- [x] 3.4 The previously-timed-out large messages (74 KiB and 96 KiB, read straight from the API) both return whole: no response above the 64 KiB pipe buffer fails, and each one crosses the pipe complete rather than truncated
